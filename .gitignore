@@ -105,9 +105,17 @@ rom_data/
 dist/
 
 # Copyrighted ROM, extracted assets, and per-user runtime state.
-# These must NOT be committed to the public repository.
 baserom.gba
 *.sav
 run/
 config.json
 release/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/jniLibs/
+android/local.properties
+*.iml
+.idea/
