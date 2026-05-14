@@ -11,6 +11,8 @@
 #include <string.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "gba/io_reg.h"
 #include "main.h"
@@ -113,13 +115,41 @@ JNIEXPORT void JNICALL Java_org_tmc_GameActivity_nativeKeyUp(JNIEnv* env, jobjec
     Port_Android_KeyUp((int)keyCode);
 }
 
+/* ── Signal handler for native crash logging ─────────────────────── */
+
+static void crash_handler(int sig) {
+    switch (sig) {
+        case SIGSEGV: LOGI(">>> CRASH: SIGSEGV (null pointer or invalid memory access)"); break;
+        case SIGABRT: LOGI(">>> CRASH: SIGABRT (assertion failed or abort())"); break;
+        case SIGFPE:  LOGI(">>> CRASH: SIGFPE (divide by zero)"); break;
+        case SIGILL:  LOGI(">>> CRASH: SIGILL (illegal instruction)"); break;
+        default:      LOGI(">>> CRASH: signal %d", sig); break;
+    }
+    _exit(1);
+}
+
+/* ── Android-compatible fatal error ───────────────────────────────── */
+
+void Android_FatalError(const char* title, const char* msg) {
+    LOGE("FATAL: %s - %s", title, msg);
+    /* Can't show a dialog here (no Java env in this thread), so just log it */
+}
+
 /* ── Game thread ──────────────────────────────────────────────────── */
 
 static void* game_thread_func(void* arg) {
+    signal(SIGSEGV, crash_handler);
+    signal(SIGABRT, crash_handler);
+    signal(SIGFPE, crash_handler);
+    signal(SIGILL, crash_handler);
+
     JNIEnv* env;
     (*gJvm)->AttachCurrentThread(gJvm, &env, NULL);
 
     LOGI("Game thread started");
+
+    LOGI("filesDir: %s", gFilesDir);
+    LOGI("romPath: %s", gRomPath);
 
     *(u16*)(gIoMem + REG_OFFSET_KEYINPUT) = 0x03FF;
 
@@ -139,13 +169,26 @@ static void* game_thread_func(void* arg) {
     }
 
     const char* romPath = gRomPath[0] != '\0' ? gRomPath : Port_Android_FindRom();
-    if (!romPath) {
+    if (!romPath || romPath[0] == '\0') {
         LOGE("No baserom.gba found! Place it in %s/", gFilesDir);
         sem_post(&gInitSem);
         return NULL;
     }
 
     LOGI("Loading ROM: %s", romPath);
+    {
+        FILE* test = fopen(romPath, "rb");
+        if (!test) {
+            LOGE("ROM file cannot be opened: %s", romPath);
+            sem_post(&gInitSem);
+            return NULL;
+        }
+        fseek(test, 0, SEEK_END);
+        long sz = ftell(test);
+        fclose(test);
+        LOGI("ROM file verified: %ld bytes", sz);
+    }
+
     Port_LoadRom(romPath);
     Port_PPU_Init(NULL);
 

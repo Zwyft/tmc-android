@@ -116,6 +116,8 @@ release/
 android/.gradle/
 android/build/
 android/app/build/
+android/app/.cxx/
+android/local.properties
 android/app/src/main/jniLibs/
 android/local.properties
 *.iml
