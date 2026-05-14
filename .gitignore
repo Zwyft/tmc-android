@@ -61,6 +61,7 @@ tools/binutils
 .fuse_hidden*
 *.bak
 *.bat
+!android/gradlew.bat
 *.diff
 *.dump
 *.id0
