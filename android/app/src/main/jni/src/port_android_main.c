@@ -154,12 +154,11 @@ static void* game_thread_func(void* arg) {
     JNIEnv* env;
     (*gJvm)->AttachCurrentThread(gJvm, &env, NULL);
 
-    /* Open debug log file */
+    /* Open debug log file on accessible shared storage */
     {
-        char log_path[640];
-        snprintf(log_path, sizeof(log_path), "%s/debug.log", gFilesDir);
-        sDebugLog = fopen(log_path, "w");
-        if (sDebugLog) DBG("[init] debug.log opened");
+        sDebugLog = fopen("/storage/emulated/0/tmc_debug.log", "w");
+        if (sDebugLog) DBG("[init] tmc_debug.log opened");
+        else DBG("[init] FAILED to open tmc_debug.log (no permission?)");
     }
 
     DBG("[init] Game thread started");

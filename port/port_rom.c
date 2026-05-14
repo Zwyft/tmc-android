@@ -23,7 +23,7 @@
 #include <android/log.h>
 #define ALOG(...) do { \
     __android_log_print(ANDROID_LOG_INFO, "TMC-ROM", __VA_ARGS__); \
-    FILE* _f = fopen("/data/user/0/org.tmc/files/debug_rom.log", "a"); \
+    FILE* _f = fopen("/storage/emulated/0/tmc_debug_rom.log", "a"); \
     if (_f) { fprintf(_f, __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
 } while(0)
 #else
