@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,9 +20,35 @@ typedef struct SDL_Joystick SDL_Joystick;
 typedef int32_t SDL_Keycode;
 typedef int32_t SDL_Scancode;
 
+/* SDL keycodes */
 #define SDLK_UNKNOWN 0
 #define SDLK_BACKSLASH 92
+#define SDLK_RETURN 13
+#define SDLK_TAB 9
+#define SDLK_SPACE 32
+#define SDLK_BACKSPACE 8
+#define SDLK_ESCAPE 27
+#define SDLK_UP    0x40000052
+#define SDLK_DOWN  0x40000051
+#define SDLK_LEFT  0x40000050
+#define SDLK_RIGHT   0x4000004F
+#define SDLK_PAGEUP  0x4000004B
+#define SDLK_PAGEDOWN 0x4000004E
+#define SDLK_HOME    0x4000004A
+#define SDLK_END     0x4000004D
+#define SDLK_KP_ENTER 0x40000058
+#define SDLK_F5    0x40000062
+#define SDLK_F6    0x40000063
+#define SDLK_F8    0x40000065
+#define SDLK_F9    0x40000066
+#define SDLK_F11   0x40000068
+#define SDLK_F12   0x40000069
 #define SDL_SCANCODE_UNKNOWN 0
+#define SDL_KMOD_ALT 0x0100
+#define SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE 8
+#define SDL_BLENDMODE_BLEND 1
+#define SDL_BLENDMODE_NONE 0
+typedef struct { float x, y, w, h; } SDL_FRect;
 
 enum {
     SDL_GAMEPAD_BUTTON_INVALID = -1,
@@ -60,6 +87,7 @@ typedef int SDL_JoystickID;
 enum {
     SDL_EVENT_QUIT = 0x100,
     SDL_EVENT_KEY_DOWN,
+    SDL_EVENT_KEY_UP,
     SDL_EVENT_GAMEPAD_ADDED,
     SDL_EVENT_GAMEPAD_REMOVED,
     SDL_EVENT_GAMEPAD_BUTTON_DOWN,
@@ -71,7 +99,7 @@ enum {
 typedef union SDL_Event {
     uint32_t type;
     struct { uint32_t type; } common;
-    struct { uint32_t type; SDL_Keycode key; struct { int repeat; } key; } key;
+    struct { uint32_t type; SDL_Keycode key; uint16_t mod; uint8_t scancode; bool down; bool repeat; } key;
     struct { uint32_t type; SDL_JoystickID which; } gdevice;
     struct { uint32_t type; SDL_JoystickID which; uint8_t button; } gbutton;
     struct { uint32_t type; SDL_JoystickID which; uint8_t axis; int16_t value; } gaxis;
@@ -98,7 +126,9 @@ static inline uint32_t SDL_GetTicks(void) {
 }
 
 static inline void SDL_Delay(uint32_t ms) {
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000 };
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000;
     nanosleep(&ts, NULL);
 }
 
@@ -165,7 +195,12 @@ static inline void SDL_Delay(uint32_t ms) {
 #define SDL_Log(...)
 #define SDL_zero(x)
 #define SDL_free(p) free(p)
+#define SDL_strlen(p) strlen(p)
+#define SDL_strlcpy(d,s,n) strncpy((d),(s),(n))
 #define SDL_RenderDebugText(...)
+#define SDL_SetRenderDrawBlendMode(...)
+#define SDL_RenderFillRect(...)
+#define SDL_RenderRect(...)
 #define SDL_snprintf snprintf
 #define SDL_GetAudioDriver(i) ""
 #define SDL_GetCurrentAudioDriver() ""

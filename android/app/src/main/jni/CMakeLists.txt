@@ -5,13 +5,15 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-get_filename_component(PROJ_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
+get_filename_component(PROJ_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
 
 add_definitions(-DPC_PORT -DNON_MATCHING -DUSA -DENGLISH -DREVISION=0)
-add_definitions(-DANDROID_PORT -DTMC_PORT_VERSION="\"0.1.3\"" -DMODE1_GBA_WIDTH=240)
+add_definitions(-DANDROID_PORT -DMODE1_GBA_WIDTH=240)
+add_definitions(-DTMC_PORT_VERSION="0.1.3")
 add_definitions(-DFMT_HEADER_ONLY=1)
 
 include_directories(
+    ${PROJ_ROOT}
     ${PROJ_ROOT}/include
     ${PROJ_ROOT}/port
     ${PROJ_ROOT}/libs

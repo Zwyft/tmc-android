@@ -5,6 +5,7 @@ import android.content.res.AssetManager;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 

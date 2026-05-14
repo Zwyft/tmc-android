@@ -1,6 +1,8 @@
 #include <android/log.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <jni.h>
@@ -16,6 +18,7 @@
 #include "port_android_render.h"
 #include "port_android_audio.h"
 #include "port_android_input.h"
+#include "port_rom.h"
 #include "port_android_rom.h"
 #include "port_ppu.h"
 
@@ -158,6 +161,7 @@ JNIEXPORT void JNICALL Java_org_tmc_TMCActivity_nativeMain(JNIEnv* env, jobject 
 }
 
 extern void AgbMain(void);
-extern void Port_LoadRom(const char* path);
-extern void Port_PPU_Init(void* window);
+extern void Port_PPU_Init(SDL_Window* window);
 extern void Port_Audio_Shutdown(void);
+extern void Port_Audio_Pause(void);
+extern void Port_Audio_Resume(void);
