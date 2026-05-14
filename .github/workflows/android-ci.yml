@@ -22,8 +22,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 0
+
+      - name: Remove stale submodule references
+        run: |
+          rm -rf libs/ViruaPPU/.git libs/VirtuaAPU/.git libs/tmc-Android-Experimental/.git 2>/dev/null; true
+          rm -rf .git/modules/libs 2>/dev/null; true
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
