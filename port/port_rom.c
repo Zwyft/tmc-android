@@ -1041,12 +1041,17 @@ void Port_LoadRom(const char* path) {
             R->gameCode);
 
     /* ---- Step 4: resolve ROM symbols using compile-time tables + gRomData ---- */
+    ALOG("[PLR] step4 start: R=%p gRomData=%p", (void*)R, (void*)gRomData);
+    ALOG("[PLR]   gfxAndPalettes=0x%X", R->gfxAndPalettes);
 
     /* gGlobalGfxAndPalettes — huge palette/gfx blob (still points into gRomData) */
     gGlobalGfxAndPalettes = &gRomData[R->gfxAndPalettes];
+    ALOG("[PLR]   gGlobalGfxAndPalettes set");
 
     /* gFrameObjLists — from compile-time const data (no ROM read needed) */
+    ALOG("[PLR]   frameObjListsSize=%u", R->frameObjListsSize);
     memcpy(gFrameObjLists, kFrameObjListsData, R->frameObjListsSize);
+    ALOG("[PLR]   frameObjLists copied");
     fprintf(stderr, "gFrameObjLists loaded (%u bytes from compile-time table).\n", R->frameObjListsSize);
 
     /* gExtraFrameOffsets — self-relative offset table for multi-part sprite positioning */
@@ -1064,9 +1069,11 @@ void Port_LoadRom(const char* path) {
     fprintf(stderr, "gFixedTypeGfxData loaded (%u entries from compile-time table).\n", R->fixedTypeGfxCount);
 
     /* gSpritePtrs — resolved from compile-time offset table */
+    ALOG("[PLR]   spritePtrsCount=%u", R->spritePtrsCount);
     {
         memset(sSpritePtrsStable, 0, sizeof(sSpritePtrsStable));
         for (u32 i = 0; i < R->spritePtrsCount; i++) {
+            if (i % 100 == 0) ALOG("[PLR]   spritePtrs[%u]...", i);
             gSpritePtrs[i].animations = ResolveTableOffset(kSpritePtrEntries[i][0]);
             gSpritePtrs[i].frames = (SpriteFrame*)ResolveTableOffset(kSpritePtrEntries[i][1]);
             gSpritePtrs[i].ptr = ResolveTableOffset(kSpritePtrEntries[i][2]);

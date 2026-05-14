@@ -115,6 +115,7 @@ JNIEXPORT void JNICALL Java_org_tmc_GameActivity_nativeKeyUp(JNIEnv* env, jobjec
     Port_Android_KeyUp((int)keyCode);
 }
 
+/* Force CMake rebuild on next compile */
 /* ── Signal handler for native crash logging ─────────────────────── */
 
 static void crash_handler(int sig) {
