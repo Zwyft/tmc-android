@@ -279,8 +279,14 @@ public class PrelauncherActivity extends Activity {
                     detectedRegion = detectRegionBySize(new File(getFilesDir(), displayName));
                 }
 
+                // Always use baserom.gba as canonical path in files dir
+                File canon = new File(getFilesDir(), "baserom.gba");
+                if (!displayName.equals("baserom.gba")) {
+                    copyFile(outFile, canon);
+                }
+
                 mainHandler.post(() -> {
-                    selectedRomPath = outFile.getAbsolutePath();
+                    selectedRomPath = canon.getAbsolutePath();
                     selectedRomSha1 = sha1;
                     saveRomPrefs(selectedRomPath, sha1);
                     progressBar.setVisibility(View.GONE);
@@ -289,11 +295,6 @@ public class PrelauncherActivity extends Activity {
                     setStatus("ROM ready", "#4ecca3", "#4ecca3");
                     enablePlayButton();
                 });
-
-                if (!displayName.equals("baserom.gba")) {
-                    File target = new File(getFilesDir(), "baserom.gba");
-                    copyFile(outFile, target);
-                }
 
             } catch (Exception e) {
                 mainHandler.post(() -> {

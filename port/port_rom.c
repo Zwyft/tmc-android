@@ -19,6 +19,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef ANDROID_PORT
+#include <android/log.h>
+#define ALOG(...) __android_log_print(ANDROID_LOG_INFO, "TMC-ROM", __VA_ARGS__)
+#else
+#define ALOG(...) fprintf(stderr, __VA_ARGS__)
+#endif
 
 #ifdef _WIN32
 #include <direct.h>
@@ -817,9 +823,11 @@ static int GetExeDir(char* out, size_t n) {
 }
 
 static FILE* TryOpenRom(const char** paths, int count, char* foundPath, int foundPathLen) {
+    ALOG("[TryOpenRom] count=%d", count);
     /* Pass 1: exe_dir/<basename> for any candidate that's a bare filename. */
     char exeDir[4096];
     if (GetExeDir(exeDir, sizeof(exeDir))) {
+        ALOG("[TryOpenRom] exeDir=%s", exeDir);
         for (int i = 0; i < count; i++) {
             const char* p = paths[i];
             if (!p)
@@ -924,6 +932,7 @@ static int LoadRomGaps(void) {
 }
 
 void Port_LoadRom(const char* path) {
+    ALOG("[Port_LoadRom] enter path=%s", path ? path : "NULL");
     memset(sExtractedPages, 0, sizeof(sExtractedPages));
 
     /* ---- Step 1: try loading from rom_data/ extracted pages ---- */
@@ -931,6 +940,7 @@ void Port_LoadRom(const char* path) {
     if (pagesLoaded > 0) {
         fprintf(stderr, "ROM data: loaded %d extracted pages from " ROM_EXTRACT_DIR "/\n", pagesLoaded);
     }
+    ALOG("[Port_LoadRom] step1 done, pages=%d", pagesLoaded);
 
     /* ---- Step 2: try ROM files (USA first, then EU) ---- */
     /*
@@ -979,6 +989,8 @@ void Port_LoadRom(const char* path) {
             fprintf(stderr, "ROM loaded: %u bytes (0x%X) from %s\n", gRomSize, gRomSize, usedPath);
         }
     }
+
+    ALOG("[Port_LoadRom] step2 done, romLoaded=%d, gRomData=%p, gRomSize=%u", romLoaded, (void*)gRomData, gRomSize);
 
     /* ---- Step 3: load gap data (assembled tables not in assets) ---- */
     /*
