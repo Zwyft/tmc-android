@@ -1,0 +1,58 @@
+{
+  "buildFiles": [
+    "/home/jak/AndroidStudioProjects/tmc-android/android/app/src/main/jni/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/home/jak/Android/Sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/home/jak/Android/Sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "agbplay::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "agbplay",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/arm64-v8a/libagbplay.a"
+    },
+    "tmc::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "tmc",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/build/intermediates/cxx/Debug/2b3n4p4k/obj/arm64-v8a/libtmc.so",
+      "runtimeFiles": []
+    },
+    "virtuaapu::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "virtuaapu",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/arm64-v8a/libvirtuaapu.a"
+    },
+    "viruappu::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "viruappu",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/arm64-v8a/libviruappu.a"
+    }
+  },
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "/home/jak/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang.lld",
+      "cppCompilerExecutable": "/home/jak/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++.lld"
+    }
+  },
+  "cFileExtensions": [
+    "c"
+  ],
+  "cppFileExtensions": [
+    "cpp"
+  ]
+}

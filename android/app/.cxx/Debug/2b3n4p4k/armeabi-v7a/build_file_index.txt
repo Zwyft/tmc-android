@@ -1,0 +1,1 @@
+/home/jak/AndroidStudioProjects/tmc-android/android/app/src/main/jni/CMakeLists.txt

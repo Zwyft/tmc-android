@@ -1,0 +1,45 @@
+{
+  "buildFiles": [
+    "/home/jak/AndroidStudioProjects/tmc-android/android/app/src/main/jni/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/home/jak/Android/Sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/home/jak/Android/Sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "tmc::@6890427a1f51a3e7e1df": {
+      "artifactName": "tmc",
+      "abi": "x86_64",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/build/intermediates/cxx/Debug/2b3n4p4k/obj/x86_64/libtmc.so",
+      "runtimeFiles": []
+    },
+    "virtuaapu::@6890427a1f51a3e7e1df": {
+      "artifactName": "virtuaapu",
+      "abi": "x86_64",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/libvirtuaapu.a",
+      "runtimeFiles": []
+    },
+    "agbplay::@6890427a1f51a3e7e1df": {
+      "artifactName": "agbplay",
+      "abi": "x86_64",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/libagbplay.a",
+      "runtimeFiles": []
+    },
+    "viruappu::@6890427a1f51a3e7e1df": {
+      "artifactName": "viruappu",
+      "abi": "x86_64",
+      "output": "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/libviruappu.a",
+      "runtimeFiles": []
+    }
+  }
+}

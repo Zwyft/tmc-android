@@ -1,0 +1,87 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-f5ebdc15457944623624.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.10.0"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "tmc",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "agbplay::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-agbplay-Debug-5399cc46c7c7d382aa74.json",
+					"name" : "agbplay",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "tmc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-tmc-Debug-33876faa64e3b678d00a.json",
+					"name" : "tmc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "virtuaapu::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-virtuaapu-Debug-811bdb6d9a371463f621.json",
+					"name" : "virtuaapu",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "viruappu::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-viruappu-Debug-8671719064625795ee54.json",
+					"name" : "viruappu",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/armeabi-v7a",
+		"source" : "/home/jak/AndroidStudioProjects/tmc-android/android/app/src/main/jni"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

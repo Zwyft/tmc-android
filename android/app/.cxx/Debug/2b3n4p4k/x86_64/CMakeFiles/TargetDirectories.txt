@@ -1,0 +1,6 @@
+/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/CMakeFiles/viruappu.dir
+/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/CMakeFiles/virtuaapu.dir
+/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/CMakeFiles/agbplay.dir
+/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/CMakeFiles/tmc.dir
+/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/CMakeFiles/edit_cache.dir
+/home/jak/AndroidStudioProjects/tmc-android/android/app/.cxx/Debug/2b3n4p4k/x86_64/CMakeFiles/rebuild_cache.dir
