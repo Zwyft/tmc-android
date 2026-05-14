@@ -21,7 +21,11 @@
 #include <string.h>
 #ifdef ANDROID_PORT
 #include <android/log.h>
-#define ALOG(...) __android_log_print(ANDROID_LOG_INFO, "TMC-ROM", __VA_ARGS__)
+#define ALOG(...) do { \
+    __android_log_print(ANDROID_LOG_INFO, "TMC-ROM", __VA_ARGS__); \
+    FILE* _f = fopen("/data/user/0/org.tmc/files/debug_rom.log", "a"); \
+    if (_f) { fprintf(_f, __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
+} while(0)
 #else
 #define ALOG(...) fprintf(stderr, __VA_ARGS__)
 #endif
