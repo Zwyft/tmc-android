@@ -14,6 +14,15 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef ANDROID_PORT
+#define DBG(...) do { \
+    FILE* _f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a"); \
+    if (_f) { fprintf(_f, "[VBlank] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
+} while(0)
+#else
+#define DBG(...)
+#endif
+
 static bool gQuitRequested = false;
 static bool sFastForward = false;
 static int sFrameNum = 0;
@@ -177,6 +186,7 @@ static u64 sFpsWindowStartNs = 0;
 static u32 sFpsFrameCount = 0;
 
 void VBlankIntrWait(void) {
+    DBG("enter");
     u64 nowNs;
 
     /* Toggle VSync based on whether we're trying to run faster than the
@@ -191,7 +201,9 @@ void VBlankIntrWait(void) {
         Port_PPU_SetVSync(wantVsync);
     }
 
+    DBG("Port_PPU_PresentFrame...");
     Port_PPU_PresentFrame();
+    DBG("port_hdma_vblank_reset...");
     port_hdma_vblank_reset();
 
     /* Deadline-based pacing: each frame's target is the previous
@@ -251,10 +263,13 @@ void VBlankIntrWait(void) {
         exit(0);
     }
 
+    DBG("Port_PumpEvents...");
     Port_PumpEvents();
+    DBG("Port_UpdateInput...");
     Port_UpdateInput();
-
+    DBG("VBlankIntr...");
     VBlankIntr();
+    DBG("VBlankIntr done");
 }
 
 /* ---- BIOS functions ---- */
