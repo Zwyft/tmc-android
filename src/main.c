@@ -13,6 +13,16 @@
 #include "screen.h"
 #include "sound.h"
 #include "fade.h"
+
+#ifdef ANDROID_PORT
+/* Append to debug log file (must match path in port_android_main.c) */
+#define DBG(...) do { \
+    FILE* _f = fopen("/data/local/tmp/tmc_debug.log", "a"); \
+    if (_f) { fprintf(_f, "[AgbMain] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
+} while(0)
+#else
+#define DBG(...)
+#endif
 #ifdef PC_PORT
 #include "port_hdma.h"
 #endif
@@ -39,24 +49,35 @@ void (*const sTaskHandlers[])(void) = {
 
 void AgbMain(void) {
     // Initialization
+    DBG("[AgbMain] InitOverlays...");
     InitOverlays();
+    DBG("[AgbMain] InitSound...");
     InitSound();
+    DBG("[AgbMain] InitDMA...");
     InitDMA();
+    DBG("[AgbMain] InitSaveData...");
     InitSaveData();
+    DBG("[AgbMain] InitSaveHeader...");
     InitSaveHeader();
+    DBG("[AgbMain] InitVBlankDMA...");
     InitVBlankDMA();
     gUnk_02000010.field_0x4 = 0xc1;
+    DBG("[AgbMain] InitFade...");
     InitFade();
     DmaCopy32(3, BG_PLTT, gPaletteBuffer, BG_PLTT_SIZE);
     SetBrightness(1);
+    DBG("[AgbMain] MessageInitialize...");
     MessageInitialize();
     ResetPalettes();
     gRand = 0x1234567;
     MemClear(&gMain, sizeof(gMain));
     SetTask(TASK_TITLE);
+    DBG("[AgbMain] init done, entering loop");
 
     // Game Loop
+    int frame = 0;
     while (TRUE) {
+        if (frame == 0) DBG("[AgbMain] loop frame 0");
         ReadKeyInput();
         if (SoftResetKeysPressed()) {
             DoSoftReset();
@@ -93,6 +114,7 @@ void AgbMain(void) {
                 break;
         }
         WaitForNextFrame();
+        frame++;
     }
 }
 
