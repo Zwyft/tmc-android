@@ -5,6 +5,8 @@
 #include <GLES2/gl2.h>
 
 #define LOG_TAG "TMC-Render"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define DBG(...) do { \
     FILE* _f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a"); \
     if (_f) { fprintf(_f, "[GL] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
@@ -30,16 +32,6 @@ static const char* kFragmentShader =
     "uniform sampler2D uTexture;\n"
     "void main() {\n"
     "    gl_FragColor = texture2D(uTexture, vTexCoord);\n"
-    "}\n";
-
-static const char* kFragmentShader =
-    "#version 300 es\n"
-    "precision mediump float;\n"
-    "in vec2 vTexCoord;\n"
-    "out vec4 fragColor;\n"
-    "uniform sampler2D uTexture;\n"
-    "void main() {\n"
-    "    fragColor = texture(uTexture, vTexCoord);\n"
     "}\n";
 
 static GLuint sProgram = 0;
