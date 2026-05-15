@@ -21,11 +21,11 @@ static uint16_t* s_oam = NULL;
 /* Helper: read u16 from IO reg */
 static inline u16 io16(u32 reg) { return s_io ? *(u16*)(s_io + reg) : 0; }
 
-/* Helper: convert GBA 15-bit BGR color to 32-bit RGBA */
+/* Convert GBA BGR to RGBA */
 static inline uint32_t gba_color(uint16_t c) {
-    uint8_t r = (c >> 0) & 0x1f; r = (r << 3) | (r >> 2);
-    uint8_t g = (c >> 5) & 0x1f; g = (g << 3) | (g >> 2);
-    uint8_t b = (c >> 10) & 0x1f; b = (b << 3) | (b >> 2);
+    uint8_t r = (c & 0x1F);
+    uint8_t g = (c >> 5) & 0x1F;
+    uint8_t b = (c >> 10) & 0x1F;
     return 0xFF000000 | (r << 16) | (g << 8) | b;
 }
 
@@ -38,9 +38,9 @@ static inline uint32_t gba_color(uint16_t c) {
  *   bits 8-12: screen base block (0-31, each 2KB = 2048 bytes for 32x32 tilemap)
  *   bits 14-15: size
  */
-static inline int bg_map_base(u16 cnt) { return ((cnt >> 8) & 0x1F) * 2048; } /* byte offset */
-static inline int bg_tile_base(u16 cnt) { return ((cnt >> 2) & 3) * 16384; }  /* byte offset for 4bpp */
 static inline int bg_bpp_8(u16 cnt) { return (cnt >> 7) & 1; }
+static inline int bg_map_base(u16 cnt) { return ((cnt >> 8) & 0x1F) * 2048; }
+static inline int bg_tile_base(u16 cnt) { return ((cnt >> 2) & 3) * (bg_bpp_8(cnt) ? 32768 : 16384); }
 static inline int bg_size(u16 cnt) { return (cnt >> 14) & 3; }
 static inline int bg_mosaic(u16 cnt) { return (cnt >> 6) & 1; }
 
@@ -48,18 +48,17 @@ static inline int bg_mosaic(u16 cnt) { return (cnt >> 6) & 1; }
 static void render_bg_text_row(int bg, int line, u16* pal) {
     u16 cnt = io16(0x08 + bg * 2);
     if (!(io16(0) & (0x100 << bg))) return; /* BG not enabled */
-    if (bg_bpp_8(cnt)) return; /* Skip 8bpp for now */
 
-    int map_kb = bg_map_base(cnt);
-    int tile_kb = bg_tile_base(cnt);
+    int vram_ofs = bg_map_base(cnt);
+    int tile_ofs = bg_tile_base(cnt);
+    if (bg_bpp_8(cnt)) return; /* Skip 8bpp BG */
+
     int s = bg_size(cnt);
     int tiles_w = (s & 1) ? 64 : 32;
     int tiles_h = (s & 2) ? 64 : 32;
     int scroll_x = io16(0x10 + bg * 4);
     int scroll_y = io16(0x12 + bg * 4);
 
-    int vram_ofs = bg_map_base(cnt);
-    int tile_ofs = bg_tile_base(cnt);
     int tile_row = ((line + scroll_y) & (tiles_h * 8 - 1)) / 8;
     int tile_y = ((line + scroll_y) & 7);
 
@@ -68,12 +67,10 @@ static void render_bg_text_row(int bg, int line, u16* pal) {
         int tile_col = tx / 8;
         int tile_x = tx & 7;
 
-        /* 32x32: se_addr = tile_row * 32 + tile_col (2 bytes each) */
-        /* 64x32: se_addr = tile_row * 64 + tile_col */
         int se_addr;
         if (s == 0) se_addr = tile_row * 32 + tile_col;
         else if (s == 1) se_addr = tile_row * 64 + tile_col;
-        else if (s == 2) se_addr = tile_row * 32 + tile_col; /* two map sections */
+        else if (s == 2) se_addr = tile_row * 32 + tile_col;
         else se_addr = tile_row * 64 + tile_col;
 
         u16 se = s_vram ? *(u16*)(s_vram + vram_ofs + se_addr * 2) : 0;
@@ -85,7 +82,6 @@ static void render_bg_text_row(int bg, int line, u16* pal) {
         int px = hflip ? (7 - tile_x) : tile_x;
         int py = vflip ? (7 - tile_y) : tile_y;
 
-        /* 4bpp tile: 32 bytes per tile, 8 pixels per row = 4 bytes */
         u32 tile_data = s_vram ? *(u32*)(s_vram + tile_ofs + tile_num * 32 + py * 4) : 0;
         int color_idx = (tile_data >> (px * 4)) & 0x0F;
 
@@ -94,13 +90,15 @@ static void render_bg_text_row(int bg, int line, u16* pal) {
             color = gba_color(pal[pal_bank * 16 + color_idx]);
         }
 
-        virtuappu_frame_buffer[line * MODE1_GBA_WIDTH + x] = color | virtuappu_frame_buffer[line * MODE1_GBA_WIDTH + x];
+        if (color_idx != 0) {
+            virtuappu_frame_buffer[line * MODE1_GBA_WIDTH + x] = color;
+        }
     }
 }
 
 /* Render OBJ (sprites) from OAM */
 static void render_sprites(int line) {
-    if (!(io16(0) & 0x1000)) return; /* OBJ not enabled */
+    if (!(io16(0) & 0x1000)) return;
     if (!s_oam) return;
     if (!s_obj_pal) return;
 
@@ -151,14 +149,20 @@ static void render_sprites(int line) {
             int in_tile_y = sy & 7;
 
             int real_tile = tile_num + tile_in_sprite;
-            u32 tile_data = s_vram ? *(u32*)(s_vram + real_tile * 32 + in_tile_y * 4) : 0;
-            int color_idx = (tile_data >> (in_tile_x * 4)) & 0x0F;
+            /* Simple VRAM addressing */
+            int tile_stride = bpp8 ? 64 : 32;
+
+            int color_idx;
+            if (bpp8) {
+                int tile_addr = real_tile * tile_stride + in_tile_y * 8 + in_tile_x;
+                color_idx = s_vram ? s_vram[tile_addr] : 0;
+            } else {
+                u32 tile_data = s_vram ? *(u32*)(s_vram + real_tile * tile_stride + in_tile_y * 4) : 0;
+                color_idx = (tile_data >> (in_tile_x * 4)) & 0x0F;
+            }
 
             if (color_idx != 0) {
-                uint32_t color = bpp8
-                    ? gba_color(s_obj_pal[color_idx])
-                    : gba_color(s_obj_pal[pal_bank * 16 + color_idx]);
-                /* Simple priority: sprite over BG if priority matches */
+                uint32_t color = gba_color(s_obj_pal[pal_bank * 16 + color_idx]);
                 virtuappu_frame_buffer[line * MODE1_GBA_WIDTH + screen_x] = color;
             }
         }
@@ -178,7 +182,7 @@ static int s_frame_count = 0;
 void virtuappu_render_frame(void) {
     s_frame_count++;
 
-    /* Clear framebuffer to palette entry 0 */
+    /* Clear framebuffer to BG palette index 0 */
     uint32_t bg_color = s_bg_pal ? gba_color(s_bg_pal[0]) : 0xFF000000;
     for (int i = 0; i < MODE1_GBA_WIDTH * MODE1_GBA_HEIGHT; i++) {
         virtuappu_frame_buffer[i] = bg_color;
@@ -199,14 +203,12 @@ void virtuappu_render_frame(void) {
     /* Render per-scanline */
     for (int line = 0; line < MODE1_GBA_HEIGHT; line++) {
         if (mode <= 1) {
-            /* Text BGs: BG0-BG3 */
             for (int bg = 0; bg < 4; bg++) {
                 if (bg_enable & (1 << bg)) {
                     render_bg_text_row(bg, line, s_bg_pal);
                 }
             }
         }
-        /* Sprites always render on top (simplified) */
         render_sprites(line);
     }
 }
