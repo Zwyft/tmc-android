@@ -182,10 +182,9 @@ static int s_frame_count = 0;
 void virtuappu_render_frame(void) {
     s_frame_count++;
 
-    /* Clear framebuffer to BG palette index 0 */
-    uint32_t bg_color = s_bg_pal ? gba_color(s_bg_pal[0]) : 0xFF000000;
+    /* Clear framebuffer to white (test brightness) */
     for (int i = 0; i < MODE1_GBA_WIDTH * MODE1_GBA_HEIGHT; i++) {
-        virtuappu_frame_buffer[i] = bg_color;
+        virtuappu_frame_buffer[i] = 0xFFFFFFFF;
     }
 
     u16 dispcnt = io16(0);
