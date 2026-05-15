@@ -219,6 +219,7 @@ public class PrelauncherActivity extends Activity {
             updateRomInfo();
             setStatus("ROM ready", "#4ecca3", "#4ecca3");
             enablePlayButton();
+            mainHandler.postDelayed(this::launchGame, 200);
         }
     }
 

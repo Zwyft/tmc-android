@@ -14,7 +14,12 @@
 #include "sound.h"
 #include "fade.h"
 
+#ifdef ANDROID_PORT
+#include <android/log.h>
+#define DBG(...) __android_log_print(ANDROID_LOG_INFO, "TMC", __VA_ARGS__)
+#else
 #define DBG(...)
+#endif
 #ifdef PC_PORT
 #include "port_hdma.h"
 #endif

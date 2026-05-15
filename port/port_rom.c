@@ -1041,6 +1041,26 @@ void Port_LoadRom(const char* path) {
     /* gGlobalGfxAndPalettes — huge palette/gfx blob (still points into gRomData) */
     gGlobalGfxAndPalettes = &gRomData[R->gfxAndPalettes];
 
+    /* Resolve gPaletteGroups and gGfxGroups pointer tables from ROM */
+    {
+        for (u32 i = 0; i < R->paletteGroupsCount && i < PALETTE_GROUPS_COUNT_MAX; i++) {
+            u32 gba_addr;
+            memcpy(&gba_addr, &gRomData[R->paletteGroups + i * 4], 4);
+            if (gba_addr >= 0x08000000u && gba_addr < 0x08000000u + gRomSize)
+                gPaletteGroups[i] = &gRomData[gba_addr - 0x08000000u];
+            else
+                gPaletteGroups[i] = NULL;
+        }
+        for (u32 i = 0; i < R->gfxGroupsCount && i < GFX_GROUPS_COUNT_MAX; i++) {
+            u32 gba_addr;
+            memcpy(&gba_addr, &gRomData[R->gfxGroups + i * 4], 4);
+            if (gba_addr >= 0x08000000u && gba_addr < 0x08000000u + gRomSize)
+                gGfxGroups[i] = &gRomData[gba_addr - 0x08000000u];
+            else
+                gGfxGroups[i] = NULL;
+        }
+    }
+
     /* gFrameObjLists — from compile-time const data (no ROM read needed) */
     memcpy(gFrameObjLists, kFrameObjListsData, R->frameObjListsSize);
     fprintf(stderr, "gFrameObjLists loaded (%u bytes from compile-time table).\n", R->frameObjListsSize);

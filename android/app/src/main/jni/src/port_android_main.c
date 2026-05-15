@@ -198,7 +198,6 @@ static void* game_thread_func(void* arg) {
 
     Port_Audio_Shutdown();
     Port_Android_ShutdownRenderer();
-    DBG("[init] Game thread exiting");
 
     (*gJvm)->DetachCurrentThread(gJvm);
     return NULL;

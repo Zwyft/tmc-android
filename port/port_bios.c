@@ -14,7 +14,12 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef ANDROID_PORT
+#include <android/log.h>
+#define DBG(...) __android_log_print(ANDROID_LOG_INFO, "TMC", __VA_ARGS__)
+#else
 #define DBG(...)
+#endif
 
 static bool gQuitRequested = false;
 static bool sFastForward = false;
@@ -177,9 +182,11 @@ static void Port_PumpEvents(void) {
 static u64 lastFrameNs = 0;
 static u64 sFpsWindowStartNs = 0;
 static u32 sFpsFrameCount = 0;
+static int sVBlankCount = 0;
 
 void VBlankIntrWait(void) {
     u64 nowNs;
+    sVBlankCount++;
 
     /* Toggle VSync based on whether we're trying to run faster than the
      * display refresh: fast-forward, or a target FPS preset > 60. With

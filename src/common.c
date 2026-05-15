@@ -121,6 +121,7 @@ typedef struct {
 #define COMMON_AREA_TABLE_COUNT 0x90
 
 static void Common_AbortMissingAssetGroup(const char* kind, u32 group) {
+#ifndef ANDROID_PORT
     fprintf(stderr, "\n[FATAL] %s group %u not found.\n", kind, group);
     fprintf(stderr, "\n  The PC port reads tile graphics, palettes and music\n");
     fprintf(stderr, "  from an `assets/` tree that you produce once by running\n");
@@ -132,6 +133,7 @@ static void Common_AbortMissingAssetGroup(const char* kind, u32 group) {
     fprintf(stderr, "  baserom.gba next to itself, then writes assets/ and\n");
     fprintf(stderr, "  assets_src/ alongside the binary.\n\n");
     abort();
+#endif
 }
 
 static bool32 Common_IsRoomHeaderPtrInRom(const RoomHeader* ptr) {
