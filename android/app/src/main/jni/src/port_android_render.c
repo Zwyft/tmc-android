@@ -4,6 +4,10 @@
 #include <string.h>
 
 #define LOG_TAG "TMC-Render"
+#define DBG(...) do { \
+    FILE* _f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a"); \
+    if (_f) { fprintf(_f, "[GL] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
+} while(0)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -193,11 +197,18 @@ void Port_Android_GetWindowSize(int* w, int* h) {
 
 /* Called from port_ppu.c: present the rendered frame */
 void Port_PresentFrameGL(void) {
+    DBG("glClear...");
     glClear(GL_COLOR_BUFFER_BIT);
+    DBG("glBindTexture...");
     glBindTexture(GL_TEXTURE_2D, sTexture);
+    DBG("glTexImage2D...");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 240, 160, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                  virtuappu_frame_buffer);
+    DBG("glBindVertexArray...");
     glBindVertexArray(sVAO);
+    DBG("glDrawArrays...");
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    DBG("SwapBuffers...");
     Port_Android_SwapBuffers();
+    DBG("PresentFrameGL done");
 }
