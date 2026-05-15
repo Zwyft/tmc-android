@@ -40,7 +40,7 @@ static GLuint sVBO = 0;
 static GLuint sTexture = 0;
 static GLint sUniformTex = -1;
 
-extern uint32_t* virtuappu_frame_buffer;
+extern uint32_t virtuappu_frame_buffer[];
 
 static GLuint compile_shader(GLenum type, const char* src) {
     GLuint shader = glCreateShader(type);
