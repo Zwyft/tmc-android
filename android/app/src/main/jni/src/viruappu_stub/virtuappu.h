@@ -6,11 +6,12 @@
 extern "C" {
 #endif
 
-/* GBA PPU emulator stub for Android port compilation.
- * Replace with the actual ViruaPPU library from the PC port. */
+/* Minimal GBA PPU renderer for Android port. */
 
 #define MODE1_GBA_WIDTH  240
 #define MODE1_GBA_HEIGHT 160
+typedef uint16_t u16;
+typedef uint32_t u32;
 
 typedef struct {
     uint8_t* io;
