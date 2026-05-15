@@ -15,9 +15,9 @@
 #include "fade.h"
 
 #ifdef ANDROID_PORT
-/* Append to debug log file (must match path in port_android_main.c) */
+/* Append to debug log file */
 #define DBG(...) do { \
-    FILE* _f = fopen("/data/local/tmp/tmc_debug.log", "a"); \
+    FILE* _f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a"); \
     if (_f) { fprintf(_f, "[AgbMain] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
 } while(0)
 #else
