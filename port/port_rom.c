@@ -21,11 +21,7 @@
 #include <string.h>
 #ifdef ANDROID_PORT
 #include <android/log.h>
-#define ALOG(...) do { \
-    __android_log_print(ANDROID_LOG_INFO, "TMC-ROM", __VA_ARGS__); \
-    FILE* _f = fopen("/data/local/tmp/tmc_rom_debug.log", "a"); \
-    if (_f) { fprintf(_f, __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
-} while(0)
+#define ALOG(...) __android_log_print(ANDROID_LOG_INFO, "TMC-ROM", __VA_ARGS__)
 #else
 #define ALOG(...) fprintf(stderr, __VA_ARGS__)
 #endif
@@ -936,7 +932,6 @@ static int LoadRomGaps(void) {
 }
 
 void Port_LoadRom(const char* path) {
-    ALOG("[Port_LoadRom] enter path=%s", path ? path : "NULL");
     memset(sExtractedPages, 0, sizeof(sExtractedPages));
 
     /* ---- Step 1: try loading from rom_data/ extracted pages ---- */
@@ -944,7 +939,6 @@ void Port_LoadRom(const char* path) {
     if (pagesLoaded > 0) {
         fprintf(stderr, "ROM data: loaded %d extracted pages from " ROM_EXTRACT_DIR "/\n", pagesLoaded);
     }
-    ALOG("[Port_LoadRom] step1 done, pages=%d", pagesLoaded);
 
     /* ---- Step 2: try ROM files (USA first, then EU) ---- */
     /*
@@ -993,8 +987,6 @@ void Port_LoadRom(const char* path) {
             fprintf(stderr, "ROM loaded: %u bytes (0x%X) from %s\n", gRomSize, gRomSize, usedPath);
         }
     }
-
-    ALOG("[Port_LoadRom] step2 done, romLoaded=%d, gRomData=%p, gRomSize=%u", romLoaded, (void*)gRomData, gRomSize);
 
     /* ---- Step 3: load gap data (assembled tables not in assets) ---- */
     /*
@@ -1045,17 +1037,12 @@ void Port_LoadRom(const char* path) {
             R->gameCode);
 
     /* ---- Step 4: resolve ROM symbols using compile-time tables + gRomData ---- */
-    ALOG("[PLR] step4 start: R=%p gRomData=%p", (void*)R, (void*)gRomData);
-    ALOG("[PLR]   gfxAndPalettes=0x%X", R->gfxAndPalettes);
 
     /* gGlobalGfxAndPalettes — huge palette/gfx blob (still points into gRomData) */
     gGlobalGfxAndPalettes = &gRomData[R->gfxAndPalettes];
-    ALOG("[PLR]   gGlobalGfxAndPalettes set");
 
     /* gFrameObjLists — from compile-time const data (no ROM read needed) */
-    ALOG("[PLR]   frameObjListsSize=%u", R->frameObjListsSize);
     memcpy(gFrameObjLists, kFrameObjListsData, R->frameObjListsSize);
-    ALOG("[PLR]   frameObjLists copied");
     fprintf(stderr, "gFrameObjLists loaded (%u bytes from compile-time table).\n", R->frameObjListsSize);
 
     /* gExtraFrameOffsets — self-relative offset table for multi-part sprite positioning */
@@ -1073,11 +1060,9 @@ void Port_LoadRom(const char* path) {
     fprintf(stderr, "gFixedTypeGfxData loaded (%u entries from compile-time table).\n", R->fixedTypeGfxCount);
 
     /* gSpritePtrs — resolved from compile-time offset table */
-    ALOG("[PLR]   spritePtrsCount=%u", R->spritePtrsCount);
     {
         memset(sSpritePtrsStable, 0, sizeof(sSpritePtrsStable));
         for (u32 i = 0; i < R->spritePtrsCount; i++) {
-            if (i % 100 == 0) ALOG("[PLR]   spritePtrs[%u]...", i);
             gSpritePtrs[i].animations = ResolveTableOffset(kSpritePtrEntries[i][0]);
             gSpritePtrs[i].frames = (SpriteFrame*)ResolveTableOffset(kSpritePtrEntries[i][1]);
             gSpritePtrs[i].ptr = ResolveTableOffset(kSpritePtrEntries[i][2]);

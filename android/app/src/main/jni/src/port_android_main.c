@@ -28,12 +28,8 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-/* File-based debug log — readable via `cat /sdcard/Android/data/org.tmc/files/debug.log` */
-static FILE* sDebugLog = NULL;
-#define DBG(...) do { \
-    __android_log_print(ANDROID_LOG_INFO, "TMC", __VA_ARGS__); \
-    if (sDebugLog) { fprintf(sDebugLog, __VA_ARGS__); fprintf(sDebugLog, "\n"); fflush(sDebugLog); } \
-} while(0)
+/* Logcat-only debug log */
+#define DBG(...) __android_log_print(ANDROID_LOG_INFO, "TMC", __VA_ARGS__)
 
 static JavaVM* gJvm = NULL;
 static ANativeWindow* gWindow = NULL;
@@ -161,89 +157,48 @@ static void* game_thread_func(void* arg) {
     JNIEnv* env;
     (*gJvm)->AttachCurrentThread(gJvm, &env, NULL);
 
-    /* Open debug log file on accessible shared storage */
-    {
-        char log_path[640];
-        snprintf(log_path, sizeof(log_path), "%s/debug.log",
-                 gExtFilesDir[0] ? gExtFilesDir : gFilesDir);
-        sDebugLog = fopen(log_path, "w");
-        if (sDebugLog) {
-            DBG("[init] debug log: %s", log_path);
-        } else {
-            DBG("[init] FAILED fopen: %s", log_path);
-            /* Last resort: try /data/local/tmp/ */
-            sDebugLog = fopen("/data/local/tmp/tmc_debug.log", "w");
-            if (sDebugLog) DBG("[init] fallback log OK");
-        }
-    }
-
-    DBG("[init] Game thread started");
-    DBG("[init] filesDir: %s", gFilesDir);
-    DBG("[init] romPath: %s", gRomPath);
-
     *(u16*)(gIoMem + REG_OFFSET_KEYINPUT) = 0x03FF;
 
     char config_path[640];
     snprintf(config_path, sizeof(config_path), "%s/config.json", gFilesDir);
     Port_Config_Load(config_path);
-    DBG("[init] config loaded");
 
-    DBG("[init] init renderer...");
     if (!Port_Android_InitRenderer(gWindow)) {
-        DBG("[init] FAILED renderer");
         sem_post(&gInitSem);
         return NULL;
     }
-    DBG("[init] renderer OK");
 
-    DBG("[init] init audio...");
     if (!Port_Android_InitAudio()) {
-        DBG("[init] FAILED audio, muting");
         gMain.muteAudio = 1;
     }
-    DBG("[init] audio OK");
 
     const char* romPath = gRomPath[0] != '\0' ? gRomPath : Port_Android_FindRom();
-    DBG("[init] romPath resolved: '%s'", romPath ? romPath : "NULL");
     if (!romPath || romPath[0] == '\0') {
-        DBG("[init] FATAL: no ROM path");
         sem_post(&gInitSem);
         return NULL;
     }
 
-    DBG("[init] verifying ROM file...");
     {
         FILE* test = fopen(romPath, "rb");
         if (!test) {
-            DBG("[init] FATAL: cannot open ROM: %s", romPath);
             sem_post(&gInitSem);
             return NULL;
         }
-        fseek(test, 0, SEEK_END);
-        long sz = ftell(test);
         fclose(test);
-        DBG("[init] ROM OK: %ld bytes", sz);
     }
 
-    DBG("[init] calling Port_LoadRom...");
     Port_LoadRom(romPath);
-    DBG("[init] Port_LoadRom returned");
 
-    DBG("[init] calling Port_PPU_Init...");
     Port_PPU_Init(NULL);
-    DBG("[init] Port_PPU_Init returned");
 
     sem_post(&gInitSem);
 
-    DBG("[init] entering AgbMain...");
     gRunning = 1;
     AgbMain();
-    DBG("[init] AgbMain returned (unexpected)");
 
     Port_Audio_Shutdown();
     Port_Android_ShutdownRenderer();
     DBG("[init] Game thread exiting");
-    if (sDebugLog) fclose(sDebugLog);
 
     (*gJvm)->DetachCurrentThread(gJvm);
     return NULL;

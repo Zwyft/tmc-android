@@ -7,11 +7,6 @@
 #define LOG_TAG "TMC-Render"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define DBG(...) do { \
-    FILE* _f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a"); \
-    if (_f) { fprintf(_f, "[GL] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
-} while(0)
-
 static EGLDisplay sEglDisplay = EGL_NO_DISPLAY;
 static EGLContext sEglContext = EGL_NO_CONTEXT;
 static EGLSurface sEglSurface = EGL_NO_SURFACE;
@@ -155,7 +150,6 @@ int Port_Android_InitRenderer(ANativeWindow* window) {
     glEnableVertexAttribArray(1);
 
     glGenTextures(1, &sTexture);
-    DBG("sTexture=%u (0=invalid)", (unsigned)sTexture);
     glBindTexture(GL_TEXTURE_2D, sTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -197,18 +191,11 @@ void Port_Android_GetWindowSize(int* w, int* h) {
 
 /* Called from port_ppu.c: present the rendered frame */
 void Port_PresentFrameGL(void) {
-    DBG("glClear...");
     glClear(GL_COLOR_BUFFER_BIT);
-    DBG("glBindTexture...");
     glBindTexture(GL_TEXTURE_2D, sTexture);
-    DBG("glTexImage2D...");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 240, 160, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                  virtuappu_frame_buffer);
-    DBG("glBindVertexArray...");
     glBindVertexArray(sVAO);
-    DBG("glDrawArrays...");
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    DBG("SwapBuffers...");
     Port_Android_SwapBuffers();
-    DBG("PresentFrameGL done");
 }

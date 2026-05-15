@@ -177,7 +177,6 @@ static int s_frame_count = 0;
 
 void virtuappu_render_frame(void) {
     s_frame_count++;
-    int skip_log = (s_frame_count % 60) != 0; /* log once per 60 frames */
 
     /* Clear framebuffer to palette entry 0 */
     uint32_t bg_color = s_bg_pal ? gba_color(s_bg_pal[0]) : 0xFF000000;
@@ -191,33 +190,6 @@ void virtuappu_render_frame(void) {
 
     virtuappu_registers.mode = mode;
 
-    if (!skip_log) {
-        FILE* f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a");
-        if (f) {
-            fprintf(f, "[PPU] frame=%d dispcnt=0x%04X mode=%d bg_enable=0x%X\n",
-                    s_frame_count, dispcnt, mode, bg_enable);
-            for (int b = 0; b < 4; b++) {
-                u16 cnt = io16(0x08 + b * 2);
-                fprintf(f, "[PPU]   BG%d cnt=0x%04X enable=%d base=%d tilebase=%d\n",
-                        b, cnt, (bg_enable >> b) & 1, bg_map_base(cnt), bg_tile_base(cnt));
-            }
-            /* Check palettes */
-            if (s_bg_pal) {
-                fprintf(f, "[PPU]   bg_pal[0]=0x%04X [1]=0x%04X [2]=0x%04X\n",
-                        s_bg_pal[0], s_bg_pal[1], s_bg_pal[2]);
-            }
-            /* Check if VRAM has data at key screenbases */
-            if (s_vram) {
-                for (int b = 28; b <= 30; b++) {
-                    int ofs = b * 2048; /* screen base to byte offset */
-                    u16 se = *(u16*)(s_vram + ofs);
-                    fprintf(f, "[PPU]   screenbase %d ofs=0x%05X se[0]=0x%04X se[1]=0x%04X\n",
-                            b, ofs, se, *(u16*)(s_vram + ofs + 2));
-                }
-            }
-            fclose(f);
-        }
-    }
     if (virtuappu_mode1_pre_line_callback) {
         for (int line = 0; line < MODE1_GBA_HEIGHT; line++) {
             virtuappu_mode1_pre_line_callback(line);
