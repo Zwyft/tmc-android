@@ -94,7 +94,6 @@ void AgbMain(void) {
                 break;
         }
         WaitForNextFrame();
-        frame++;
     }
 }
 
