@@ -30,10 +30,18 @@ static inline uint32_t gba_color(uint16_t c) {
 }
 
 /* BG control register fields */
-static inline int bg_map_base(u16 cnt) { return (cnt & 0x1F) * 2; }     /* KB offset into VRAM */
-static inline int bg_tile_base(u16 cnt) { return ((cnt >> 8) & 0x0F) * 16; } /* KB offset */
-static inline int bg_bpp_8(u16 cnt) { return (cnt >> 7) & 1; }            /* 0=4bpp, 1=8bpp */
-static inline int bg_size(u16 cnt) { return cnt & 0xC000; }               /* 0=32x32, 1=64x32, 2=32x64, 3=64x64 */
+/* GBA BGnCNT register:
+ *   bits 0-1: priority
+ *   bits 2-3: char base block (0-3, each 16KB for 4bpp)
+ *   bit  6:   mosaic
+ *   bit  7:   color (0=4bpp 16-color, 1=8bpp 256-color)
+ *   bits 8-12: screen base block (0-31, each 2KB = 2048 bytes for 32x32 tilemap)
+ *   bits 14-15: size
+ */
+static inline int bg_map_base(u16 cnt) { return ((cnt >> 8) & 0x1F) * 2048; } /* byte offset */
+static inline int bg_tile_base(u16 cnt) { return ((cnt >> 2) & 3) * 16384; }  /* byte offset for 4bpp */
+static inline int bg_bpp_8(u16 cnt) { return (cnt >> 7) & 1; }
+static inline int bg_size(u16 cnt) { return (cnt >> 14) & 3; }
 static inline int bg_mosaic(u16 cnt) { return (cnt >> 6) & 1; }
 
 /* Render a single text BG tile row */
@@ -50,8 +58,8 @@ static void render_bg_text_row(int bg, int line, u16* pal) {
     int scroll_x = io16(0x10 + bg * 4);
     int scroll_y = io16(0x12 + bg * 4);
 
-    int vram_ofs = map_kb * 1024;
-    int tile_ofs = tile_kb * 16384;
+    int vram_ofs = bg_map_base(cnt);
+    int tile_ofs = bg_tile_base(cnt);
     int tile_row = ((line + scroll_y) & (tiles_h * 8 - 1)) / 8;
     int tile_y = ((line + scroll_y) & 7);
 
