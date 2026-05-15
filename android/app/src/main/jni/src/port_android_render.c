@@ -2,14 +2,13 @@
 #include <android/log.h>
 #include <stdio.h>
 #include <string.h>
+#include <GLES2/gl2.h>
 
 #define LOG_TAG "TMC-Render"
 #define DBG(...) do { \
     FILE* _f = fopen("/storage/emulated/0/Android/data/org.tmc/files/debug.log", "a"); \
     if (_f) { fprintf(_f, "[GL] " __VA_ARGS__); fprintf(_f, "\n"); fclose(_f); } \
 } while(0)
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static EGLDisplay sEglDisplay = EGL_NO_DISPLAY;
 static EGLContext sEglContext = EGL_NO_CONTEXT;
@@ -17,13 +16,20 @@ static EGLSurface sEglSurface = EGL_NO_SURFACE;
 static int sWinW = 240, sWinH = 160;
 
 static const char* kVertexShader =
-    "#version 300 es\n"
-    "in vec2 aPos;\n"
-    "in vec2 aTexCoord;\n"
-    "out vec2 vTexCoord;\n"
+    "attribute vec2 aPos;\n"
+    "attribute vec2 aTexCoord;\n"
+    "varying vec2 vTexCoord;\n"
     "void main() {\n"
     "    gl_Position = vec4(aPos, 0.0, 1.0);\n"
     "    vTexCoord = aTexCoord;\n"
+    "}\n";
+
+static const char* kFragmentShader =
+    "precision mediump float;\n"
+    "varying vec2 vTexCoord;\n"
+    "uniform sampler2D uTexture;\n"
+    "void main() {\n"
+    "    gl_FragColor = texture2D(uTexture, vTexCoord);\n"
     "}\n";
 
 static const char* kFragmentShader =
@@ -74,7 +80,7 @@ int Port_Android_InitRenderer(ANativeWindow* window) {
     LOGI("EGL version %d.%d", major, minor);
 
     EGLint attribs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
         EGL_BLUE_SIZE, 8,
         EGL_GREEN_SIZE, 8,
@@ -99,7 +105,7 @@ int Port_Android_InitRenderer(ANativeWindow* window) {
     }
 
     EGLint ctxAttribs[] = {
-        EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
     };
     sEglContext = eglCreateContext(sEglDisplay, config, EGL_NO_CONTEXT, ctxAttribs);
@@ -157,11 +163,13 @@ int Port_Android_InitRenderer(ANativeWindow* window) {
     glEnableVertexAttribArray(1);
 
     glGenTextures(1, &sTexture);
+    DBG("sTexture=%u (0=invalid)", (unsigned)sTexture);
     glBindTexture(GL_TEXTURE_2D, sTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
     sUniformTex = glGetUniformLocation(sProgram, "uTexture");
     glUseProgram(sProgram);

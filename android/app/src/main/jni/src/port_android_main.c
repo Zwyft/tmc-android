@@ -4,7 +4,7 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <EGL/egl.h>
-#include <GLES3/gl3.h>
+#include <GLES2/gl2.h>
 #include <jni.h>
 #include <stdio.h>
 #include <stdlib.h>
