@@ -37,6 +37,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         nativeSetSurface(holder.getSurface());
         nativeSetAssetManager(getAssets());
         nativeSetFilesDir(getFilesDir().getAbsolutePath());
+        nativeSetExtFilesDir(getExternalFilesDir(null).getAbsolutePath());
         nativeSetApkPath(getApplicationInfo().sourceDir);
         nativeSetRomPath(romPath);
         new Thread(() -> nativeMain()).start();
@@ -101,6 +102,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native void nativeSetSurface(Surface surface);
     private static native void nativeSetAssetManager(AssetManager mgr);
     private static native void nativeSetFilesDir(String path);
+    private static native void nativeSetExtFilesDir(String path);
     private static native void nativeSetApkPath(String path);
     private static native void nativeSetRomPath(String path);
     private static native void nativeMain();

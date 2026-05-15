@@ -39,6 +39,7 @@ static JavaVM* gJvm = NULL;
 static ANativeWindow* gWindow = NULL;
 static AAssetManager* gAssetMgr = NULL;
 static char gFilesDir[512] = {0};
+static char gExtFilesDir[512] = {0};
 static char gRomPath[640] = {0};
 static volatile int gWindowWidth = 0, gWindowHeight = 0;
 static volatile int gRunning = 0;
@@ -67,6 +68,12 @@ JNIEXPORT void JNICALL Java_org_tmc_GameActivity_nativeSetFilesDir(JNIEnv* env, 
     strncpy(gFilesDir, utf, sizeof(gFilesDir) - 1);
     (*env)->ReleaseStringUTFChars(env, path, utf);
     Port_Android_SetFilesDir(gFilesDir);
+}
+
+JNIEXPORT void JNICALL Java_org_tmc_GameActivity_nativeSetExtFilesDir(JNIEnv* env, jobject thiz, jstring path) {
+    const char* utf = (*env)->GetStringUTFChars(env, path, NULL);
+    strncpy(gExtFilesDir, utf, sizeof(gExtFilesDir) - 1);
+    (*env)->ReleaseStringUTFChars(env, path, utf);
 }
 
 JNIEXPORT void JNICALL Java_org_tmc_GameActivity_nativeSetApkPath(JNIEnv* env, jobject thiz, jstring path) {
@@ -156,9 +163,18 @@ static void* game_thread_func(void* arg) {
 
     /* Open debug log file on accessible shared storage */
     {
-        sDebugLog = fopen("/storage/emulated/0/tmc_debug.log", "w");
-        if (sDebugLog) DBG("[init] tmc_debug.log opened");
-        else DBG("[init] FAILED to open tmc_debug.log (no permission?)");
+        char log_path[640];
+        snprintf(log_path, sizeof(log_path), "%s/debug.log",
+                 gExtFilesDir[0] ? gExtFilesDir : gFilesDir);
+        sDebugLog = fopen(log_path, "w");
+        if (sDebugLog) {
+            DBG("[init] debug log: %s", log_path);
+        } else {
+            DBG("[init] FAILED fopen: %s", log_path);
+            /* Last resort: try /data/local/tmp/ */
+            sDebugLog = fopen("/data/local/tmp/tmc_debug.log", "w");
+            if (sDebugLog) DBG("[init] fallback log OK");
+        }
     }
 
     DBG("[init] Game thread started");
