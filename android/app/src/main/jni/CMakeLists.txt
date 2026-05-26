@@ -8,7 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 get_filename_component(PROJ_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
 
 add_definitions(-DPC_PORT -DNON_MATCHING -DUSA -DENGLISH -DREVISION=0)
-add_definitions(-DANDROID_PORT -DMODE1_GBA_WIDTH=240)
+add_definitions(-DANDROID_PORT)
 add_definitions(-DTMC_PORT_VERSION="0.1.3")
 add_definitions(-DFMT_HEADER_ONLY=1)
 
@@ -17,7 +17,7 @@ include_directories(
     ${PROJ_ROOT}/include
     ${PROJ_ROOT}/port
     ${PROJ_ROOT}/libs
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_stub
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/virtuaapu_stub
     ${PROJ_ROOT}/libs/agbplay_core
     ${PROJ_ROOT}/tools/src/assets_extractor
@@ -27,9 +27,16 @@ include_directories(
 )
 
 add_library(viruappu STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_stub/virtuappu.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/src/virtuappu.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/src/mode0.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/src/mode1.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/src/mode2.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/src/mode7.c
 )
-target_compile_definitions(viruappu PRIVATE MODE1_GBA_WIDTH=240)
+
+target_include_directories(viruappu PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/viruappu_real/include
+)
 
 # VirtuaAPU stub (not needed for audio - agbplay handles it)
 add_library(virtuaapu STATIC
