@@ -204,6 +204,390 @@ void Port_DebugAction_MaxShells(void) {
     gSave.stats.shells = 999;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Save editor: story-skip presets + convenience/QoL mutations        */
+/* ------------------------------------------------------------------ */
+/* Every write here goes through the engine's own SetGlobalFlag /
+ * SetLocalFlagByBankB so the MULTI_REGION ordinal remap applies to the
+ * USA-baseline flag names baked into the tables below (the *B variants are
+ * macros for the plain ones outside MULTI_REGION). Writing the raw bit
+ * instead would silently target the wrong flag on EU/JP.
+ *
+ * Semantics worth preserving: story-skip intentionally leaves
+ * global_progress at 1 with TABIDACHI set. sub_unk3_HyruleTown_0 uses
+ * TABIDACHI to decide whether Hyrule Town (area 0x02) loads in festival
+ * state (area 0x15) — see the TOWN_PROBE notes in port_repro_roomcap.c.
+ * Setting TABIDACHI is what keeps the town loading its real (post-festival)
+ * properties and softlock-free. */
+
+/* Global (bank 0) flags need no ordinal remap — only bank 1's local pool
+ * diverges between regions — so these use the plain engine setters. The
+ * bank-1/2/5 local flags below go through the *B variants, which do. */
+static void SaveEditSetGlobal(u32 flag) {
+    SetGlobalFlag(flag);
+}
+
+/* Prologue: everything from "Link wakes in his bed" through meeting Ezlo
+ * and the awards ceremony. Lands the player post-Ezlo with the story flags
+ * that gate the festival sequence already cleared. */
+static void SaveEditSkipPrologue(void) {
+    SaveEditSetGlobal(START);
+    SaveEditSetGlobal(EZERO_1ST);
+    SaveEditSetGlobal(TABIDACHI);
+    SaveEditSetGlobal(OUTDOOR);
+    SaveEditSetGlobal(ENTRANCE_0);
+    SetLocalFlagByBankB(FLAG_BANK_1, MORI_00_KOBITO);
+    SetLocalFlagByBankB(FLAG_BANK_1, MORI_ENTRANCE_1ST);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_01_ZELDA);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_WAKAGI_1);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_WAKAGI_2);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_WAKAGI_3);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_AKINDO);
+    SetLocalFlagByBankB(FLAG_BANK_1, CASTLE_04_MEZAME);
+    SetLocalFlagByBankB(FLAG_BANK_1, MACHI_01_DEMO);
+    SetLocalFlagByBankB(FLAG_BANK_2, MHOUSE15_OP1ST);
+    SetLocalFlagByBankB(FLAG_BANK_2, M_PRIEST_TALK);
+    SetLocalFlagByBankB(FLAG_BANK_2, M_ELDER_TALK1ST);
+    SetLocalFlagByBankB(FLAG_BANK_2, M_PRIEST_MOVE);
+    SetLocalFlagByBankB(FLAG_BANK_2, KOBITO_MORI_1ST);
+    SetLocalFlagByBankB(FLAG_BANK_5, LV1_0B_WALK);
+    gSave.global_progress = 1;
+}
+
+/* Prologue + the Picori festival / Hyrule Town sequence. Same story-skip
+ * core plus the festival/dialogue residue and the carpet event, so the town
+ * is fully walkable on arrival. */
+static void SaveEditSkipFestival(void) {
+    SaveEditSkipPrologue();
+    /* The festival is entered by chasing Zelda (ZELDA_CHASE). Clearing it
+     * means the town never redirects to the festival layout. */
+    ClearGlobalFlag(ZELDA_CHASE);
+    SaveEditSetGlobal(MACHI_MACHIHOKORI);
+    gSave.global_progress = 2;
+}
+
+/* Festival + Deepwood approach: past the festival and the forest's first
+ * stretch, with the Mid-Woods gate opened. */
+static void SaveEditSkipDeepwood(void) {
+    SaveEditSkipFestival();
+    SaveEditSetGlobal(DASHBOOTS);
+    SaveEditSetGlobal(LEFT_DOOR_OPEN);
+    gSave.global_progress = 3;
+}
+
+/* Dungeon progression only: clears the level-completion ladder without
+ * touching story flags, so the player keeps their exact narrative state but
+ * every dungeon's "cleared" bookkeeping is set. */
+static void SaveEditClearAllDungeons(void) {
+    SetLocalFlagByBankB(FLAG_BANK_1, LV1_CLEAR);
+    SetLocalFlagByBankB(FLAG_BANK_1, LV2_CLEAR);
+    SetLocalFlagByBankB(FLAG_BANK_1, LV3_CLEAR);
+    SetLocalFlagByBankB(FLAG_BANK_1, LV4_CLEAR);
+    SetLocalFlagByBankB(FLAG_BANK_1, LV5_CLEAR);
+    SaveEditSetGlobal(LV1_CLEAR);
+    SaveEditSetGlobal(LV2_CLEAR);
+    SaveEditSetGlobal(LV3_CLEAR);
+    SaveEditSetGlobal(LV4_CLEAR);
+    SaveEditSetGlobal(LV5_CLEAR);
+}
+
+/* Reveal the world map and suppress the "new area" map-hint pings. Uses the
+ * same masks the randomizer's new-file state applies, so the result is the
+ * canonical fully-revealed map rather than an ad-hoc guess. */
+void Port_DebugAction_SaveEdit_RevealMap(void) {
+    gSave.windcrests |= 0x0001FFFFu;
+    gSave.map_hints |= 0x001Eu;
+    gSave.areaVisitFlags[0] |= 0x7F7FFFFEu;
+}
+
+/* Fast text: msg_speed 2 is the device's "instant" setting (the randomizer
+ * uses the same value). Also mirrored into the save header so a fresh boot
+ * doesn't restore the old speed. */
+void Port_DebugAction_SaveEdit_InstantText(void) {
+    gSave.msg_speed = 2;
+    if (gSaveHeader != NULL) {
+        gSaveHeader->msg_speed = 2;
+    }
+}
+
+/* Full restock: max wallet, bags and quiver, topped off with contents, and
+ * a full heal. The capacity tiers must be raised before the counts or the
+ * counts clamp to the old (smaller) cap. */
+void Port_DebugAction_SaveEdit_FullRestock(void) {
+    gSave.stats.walletType = 3;
+    gSave.stats.bombBagType = 3;
+    gSave.stats.quiverType = 3;
+    gSave.stats.rupees = 999;
+    gSave.stats.bombCount = 99;
+    gSave.stats.arrowCount = 99;
+    Port_DebugAction_HealFull();
+}
+
+/* All dungeon maps/compasses/big keys and a full set of small keys, so no
+ * dungeon is ever softlocked by a missing key. */
+void Port_DebugAction_SaveEdit_UnlockDungeons(void) {
+    int i;
+    for (i = 0; i < 0x10; i++) {
+        gSave.dungeonItems[i] |= 0x7; /* map | compass | big key */
+        gSave.dungeonKeys[i] = 9;
+    }
+}
+
+/* Preset entry point. The UI enumerates by index so the menu can render the
+ * list without duplicating the stage table. */
+int Port_DebugQuery_SaveEditPresetCount(void) {
+    return 4;
+}
+
+const char* Port_DebugQuery_SaveEditPresetName(int i) {
+    switch (i) {
+        case 0:
+            return "Skip prologue";
+        case 1:
+            return "Skip prologue + festival";
+        case 2:
+            return "Skip to post-Deepwood";
+        case 3:
+            return "Clear all dungeons";
+        default:
+            return NULL;
+    }
+}
+
+const char* Port_DebugQuery_SaveEditPresetHint(int i) {
+    switch (i) {
+        case 0:
+            return "Wake up after Ezlo, festival still ahead";
+        case 1:
+            return "Hyrule Town fully walkable on arrival";
+        case 2:
+            return "Festival and first forest stretch done";
+        case 3:
+            return "Level-clear ladder only, story untouched";
+        default:
+            return NULL;
+    }
+}
+
+void Port_DebugAction_SaveEdit_ApplyPreset(int i) {
+    switch (i) {
+        case 0:
+            SaveEditSkipPrologue();
+            break;
+        case 1:
+            SaveEditSkipFestival();
+            break;
+        case 2:
+            SaveEditSkipDeepwood();
+            break;
+        case 3:
+            SaveEditClearAllDungeons();
+            break;
+        default:
+            break;
+    }
+}
+
+/* ---- Raw field access -------------------------------------------------
+ * The editor's numeric/checkbox widgets need a uniform (query, write) pair
+ * over gSave so the UI can build rows generically instead of hardcoding each
+ * field. Field ids are a stable enum shared with the menu. */
+
+enum {
+    SAVEEDIT_FIELD_HEALTH = 0,
+    SAVEEDIT_FIELD_MAX_HEALTH,
+    SAVEEDIT_FIELD_HEART_PIECES,
+    SAVEEDIT_FIELD_RUPEES,
+    SAVEEDIT_FIELD_SHELLS,
+    SAVEEDIT_FIELD_BOMBS,
+    SAVEEDIT_FIELD_ARROWS,
+    SAVEEDIT_FIELD_WALLET_TIER,
+    SAVEEDIT_FIELD_BOMB_BAG_TIER,
+    SAVEEDIT_FIELD_QUIVER_TIER,
+    SAVEEDIT_FIELD_GLOBAL_PROGRESS,
+    SAVEEDIT_FIELD_MSG_SPEED,
+    SAVEEDIT_FIELD_BRIGHTNESS,
+    SAVEEDIT_FIELD_SAW_STAFFROLL,
+    SAVEEDIT_FIELD_COUNT,
+};
+
+static const char* const kSaveEditFieldNames[SAVEEDIT_FIELD_COUNT] = {
+    "Current health",
+    "Max hearts",
+    "Heart pieces",
+    "Rupees",
+    "Dollars (shells)",
+    "Bombs",
+    "Arrows",
+    "Wallet capacity tier",
+    "Bomb bag capacity tier",
+    "Quiver capacity tier",
+    "Global progress",
+    "Message speed",
+    "Screen brightness",
+    "Game completed (credits)",
+};
+
+const char* Port_DebugQuery_SaveEditFieldName(int field) {
+    if (field < 0 || field >= SAVEEDIT_FIELD_COUNT)
+        return NULL;
+    return kSaveEditFieldNames[field];
+}
+
+int Port_DebugQuery_SaveEditFieldCount(void) {
+    return SAVEEDIT_FIELD_COUNT;
+}
+
+/* Bounds per field. Health/maxHealth/heartPieces are in eighths (0..0xA0 =
+ * 20 containers); counts clamp to their capacity tier, mirroring the engine
+ * so an out-of-range write can't produce a save the game misreads. */
+int Port_DebugQuery_SaveEditFieldMin(int field) {
+    switch (field) {
+        case SAVEEDIT_FIELD_WALLET_TIER:
+        case SAVEEDIT_FIELD_BOMB_BAG_TIER:
+        case SAVEEDIT_FIELD_QUIVER_TIER:
+        case SAVEEDIT_FIELD_MSG_SPEED:
+        case SAVEEDIT_FIELD_BRIGHTNESS:
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+int Port_DebugQuery_SaveEditFieldMax(int field) {
+    switch (field) {
+        case SAVEEDIT_FIELD_HEALTH:
+        case SAVEEDIT_FIELD_MAX_HEALTH:
+            return 0xA0; /* 20 heart containers */
+        case SAVEEDIT_FIELD_HEART_PIECES:
+            return 20;
+        case SAVEEDIT_FIELD_RUPEES:
+            return 999;
+        case SAVEEDIT_FIELD_SHELLS:
+            return 999;
+        case SAVEEDIT_FIELD_BOMBS:
+            return 99;
+        case SAVEEDIT_FIELD_ARROWS:
+            return 99;
+        case SAVEEDIT_FIELD_WALLET_TIER:
+        case SAVEEDIT_FIELD_BOMB_BAG_TIER:
+        case SAVEEDIT_FIELD_QUIVER_TIER:
+            return 3;
+        case SAVEEDIT_FIELD_GLOBAL_PROGRESS:
+            return 10;
+        case SAVEEDIT_FIELD_MSG_SPEED:
+            return 3;
+        case SAVEEDIT_FIELD_BRIGHTNESS:
+            return 3;
+        case SAVEEDIT_FIELD_SAW_STAFFROLL:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int Port_DebugQuery_SaveEditFieldValue(int field) {
+    switch (field) {
+        case SAVEEDIT_FIELD_HEALTH:
+            return gSave.stats.health;
+        case SAVEEDIT_FIELD_MAX_HEALTH:
+            return gSave.stats.maxHealth;
+        case SAVEEDIT_FIELD_HEART_PIECES:
+            return gSave.stats.heartPieces;
+        case SAVEEDIT_FIELD_RUPEES:
+            return gSave.stats.rupees;
+        case SAVEEDIT_FIELD_SHELLS:
+            return gSave.stats.shells;
+        case SAVEEDIT_FIELD_BOMBS:
+            return gSave.stats.bombCount;
+        case SAVEEDIT_FIELD_ARROWS:
+            return gSave.stats.arrowCount;
+        case SAVEEDIT_FIELD_WALLET_TIER:
+            return gSave.stats.walletType;
+        case SAVEEDIT_FIELD_BOMB_BAG_TIER:
+            return gSave.stats.bombBagType;
+        case SAVEEDIT_FIELD_QUIVER_TIER:
+            return gSave.stats.quiverType;
+        case SAVEEDIT_FIELD_GLOBAL_PROGRESS:
+            return gSave.global_progress;
+        case SAVEEDIT_FIELD_MSG_SPEED:
+            return gSave.msg_speed;
+        case SAVEEDIT_FIELD_BRIGHTNESS:
+            return gSave.brightness;
+        case SAVEEDIT_FIELD_SAW_STAFFROLL:
+            return gSave.saw_staffroll;
+        default:
+            return 0;
+    }
+}
+
+void Port_DebugAction_SaveEdit_SetField(int field, int value) {
+    const int lo = Port_DebugQuery_SaveEditFieldMin(field);
+    const int hi = Port_DebugQuery_SaveEditFieldMax(field);
+    if (value < lo)
+        value = lo;
+    if (value > hi)
+        value = hi;
+    switch (field) {
+        case SAVEEDIT_FIELD_HEALTH:
+            gSave.stats.health = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_MAX_HEALTH:
+            gSave.stats.maxHealth = (u8)value;
+            /* Never leave health above the new ceiling: the HUD and the
+             * damage code assume health <= maxHealth. */
+            if (gSave.stats.health > gSave.stats.maxHealth)
+                gSave.stats.health = gSave.stats.maxHealth;
+            break;
+        case SAVEEDIT_FIELD_HEART_PIECES:
+            gSave.stats.heartPieces = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_RUPEES:
+            gSave.stats.rupees = (u16)value;
+            break;
+        case SAVEEDIT_FIELD_SHELLS:
+            gSave.stats.shells = (u16)value;
+            break;
+        case SAVEEDIT_FIELD_BOMBS:
+            gSave.stats.bombCount = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_ARROWS:
+            gSave.stats.arrowCount = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_WALLET_TIER:
+            gSave.stats.walletType = (u8)value;
+            if (gSave.stats.rupees > 999)
+                gSave.stats.rupees = 999;
+            break;
+        case SAVEEDIT_FIELD_BOMB_BAG_TIER:
+            gSave.stats.bombBagType = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_QUIVER_TIER:
+            gSave.stats.quiverType = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_GLOBAL_PROGRESS:
+            gSave.global_progress = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_MSG_SPEED:
+            gSave.msg_speed = (u8)value;
+            if (gSaveHeader != NULL)
+                gSaveHeader->msg_speed = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_BRIGHTNESS:
+            gSave.brightness = (u8)value;
+            if (gSaveHeader != NULL)
+                gSaveHeader->brightness = (u8)value;
+            break;
+        case SAVEEDIT_FIELD_SAW_STAFFROLL:
+            gSave.saw_staffroll = (u8)value;
+            if (gSave.stats.hasAllFigurines && value)
+                gSave.stats.hasAllFigurines = 0;
+            break;
+        default:
+            break;
+    }
+}
+
 void Port_DebugAction_AllKinstones(void) {
     int i;
     for (i = 0; i < (int)sizeof(gSave.kinstones.fuserOffers); i++) {

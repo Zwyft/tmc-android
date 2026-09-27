@@ -341,6 +341,27 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         return new SDLSurface(context);
     }
 
+    /* Crash-safe wrapper for the re-creation check: onCreate can be re-entered
+     * (density/orientation transitions on some Android 16 devices do it within
+     * milliseconds) BEFORE the native library has been loaded and its JNI
+     * natives registered. Calling the raw native method there threw
+     * UnsatisfiedLinkError and killed the app at startup. Rule: if the library
+     * is not loaded (or the call fails for any reason), allow re-creation and
+     * continue — the library-loading path below reports real load problems
+     * through its own dialog instead of a hard crash. */
+    private boolean nativeAllowRecreateActivitySafe() {
+        if (mBrokenLibraries) {
+            /* Native side not up yet — nothing sensible to ask. Allow. */
+            return true;
+        }
+        try {
+            return nativeAllowRecreateActivity();
+        } catch (Throwable t) {
+            Log.w(TAG, "nativeAllowRecreateActivity failed; allowing re-creation", t);
+            return true;
+        }
+    }
+
     // Setup
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -353,7 +374,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         /* Control activity re-creation */
         if (mSDLMainFinished || mActivityCreated) {
-              boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
+              boolean allow_recreate = nativeAllowRecreateActivitySafe();
               if (mSDLMainFinished) {
                   Log.v(TAG, "SDL main() finished");
               }

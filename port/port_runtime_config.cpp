@@ -104,12 +104,16 @@ bool sShowFps = false;
 int sPreferredRegion = -1;
 int sPreferredLanguage = -1;
 /* Widescreen pillarbox config — applied in port_ppu.cpp's present path.
- * The frame fills as much of the window as its aspect allows; whatever the
- * frame can't cover (title screen, one-screen 240px rooms) defaults to the
- * blurred ambient fill so no scene shows dead black bars. "black" restores
- * the historical plain-bars look. */
+ * Desktop uses the blurred ambient fill; Android uses a restrained dark
+ * solid stage by default so portrait-to-landscape letterbox space does not
+ * mirror/enlarge the game image behind the actual 3:2 frame. */
 PortAspectMode sAspectMode = PORT_ASPECT_NATIVE_3_2;
+#ifdef __ANDROID__
+/* Phone framing: keep the actual 3:2 game crisp against a dark stage. */
+PortBgFill sBgFill = PORT_BG_FILL_SOLID_COLOR;
+#else
 PortBgFill sBgFill = PORT_BG_FILL_BLURRED_FRAME;
+#endif
 u8 sBgFillR = 0, sBgFillG = 0, sBgFillB = 0;
 /* Renderer backend selection — read once at PPU init; menu writes
  * here but a restart is needed to apply because the window's
@@ -289,7 +293,14 @@ const BoolCfg kBoolCfg[] = {
     { "menu_hint_seen", &sMenuHintSeen, false },
     { "hold_advance_text", &sHoldAdvanceText, false },
     { "roll_attack_macro", &sRollAttackMacroEnabled, true },
+    /* Android: fullscreen = immersive landscape with the system bars
+     * hidden — the only sane default for a phone game. Desktop keeps
+     * windowed. A persisted config.json value still wins. */
+#ifdef __ANDROID__
+    { "fullscreen", &sFullscreen, true },
+#else
     { "fullscreen", &sFullscreen, false },
+#endif
     { "fullscreen_hide_cursor", &sFullscreenHideCursor, true },
     { "rando_enabled", &sRandoEnabled, false },
     { "rando_glitchless", &sRandoGlitchless, true },
@@ -353,8 +364,14 @@ nlohmann::json DefaultsJson(void) {
     j["autosave_interval_ms"] = 60000;
     j["touch_scheme"] = "joystick";
     j["aspect_mode"] = "native";
+#ifdef __ANDROID__
+    j["bg_fill"] = "solid";
+    j["bg_fill_color"] = { 8, 11, 18 };
+#else
     j["bg_fill"] = "blurred";
     j["bg_fill_color"] = { 0, 0, 0 };
+#endif
+    j["bg_fill_user_set"] = false;
     j["render_backend"] = "auto";
     /* reborn_features is intentionally absent — its presence is the signal
      * to override the compile-time feature defaults. */
@@ -731,11 +748,33 @@ extern "C" void Port_Config_Load(const char* path) {
             else
                 sAspectMode = PORT_ASPECT_NATIVE_3_2;
 
+#ifdef __ANDROID__
+            std::string bf = JsonValue(j, "bg_fill", std::string("solid"));
+#else
             std::string bf = JsonValue(j, "bg_fill", std::string("blurred"));
+#endif
+            bool migratedLegacyBgFill = false;
             for (char& c : bf) {
                 if (c >= 'A' && c <= 'Z')
                     c = static_cast<char>(c - 'A' + 'a');
             }
+#ifdef __ANDROID__
+            /* Migrate older Android installs whose generated config.json
+             * persisted the former blurred default. Keep a user-selected
+             * blurred mode only when marked by the setter below. */
+            if ((bf == "blurred" || bf == "blurred_frame") &&
+                !JsonValue(j, "bg_fill_user_set", false)) {
+                bf = "solid";
+                migratedLegacyBgFill = true;
+                sBgFillR = 8;
+                sBgFillG = 11;
+                sBgFillB = 18;
+                sConfigJson["bg_fill"] = "solid";
+                sConfigJson["bg_fill_color"] = { 8, 11, 18 };
+                sConfigJson["bg_fill_user_set"] = false;
+                SaveConfig();
+            }
+#endif
             if (bf == "solid" || bf == "solid_color")
                 sBgFill = PORT_BG_FILL_SOLID_COLOR;
             else if (bf == "blurred" || bf == "blurred_frame")
@@ -744,7 +783,11 @@ extern "C" void Port_Config_Load(const char* path) {
                 sBgFill = PORT_BG_FILL_BLACK;
 
             const auto& col = j.contains("bg_fill_color") ? j["bg_fill_color"] : nlohmann::json::array();
-            if (col.is_array() && col.size() >= 3) {
+            if (migratedLegacyBgFill) {
+                sBgFillR = 8;
+                sBgFillG = 11;
+                sBgFillB = 18;
+            } else if (col.is_array() && col.size() >= 3) {
                 auto clamp_u8 = [](double v) -> u8 {
                     if (v < 0)
                         return 0;
@@ -1119,6 +1162,9 @@ extern "C" void Port_Config_SetBgFill(PortBgFill fill) {
             break;
     }
     sConfigJson["bg_fill"] = name;
+#ifdef __ANDROID__
+    sConfigJson["bg_fill_user_set"] = true;
+#endif
     SaveConfig();
 }
 
@@ -1370,7 +1416,15 @@ extern "C" void Port_Config_HandleEvent(const SDL_Event* e) {
             }
         }
     } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-        Port_TouchControls_NotifyGamepadUsed();
+        /* Hide the touch overlay only for REAL gamepad use: on Android,
+         * phantom HID/uinput joystick devices fire synthetic button and
+         * axis events with nobody touching anything, which spammed
+         * NotifyGamepadUsed and re-hid the overlay right after every
+         * touch re-showed it — the root cause of issue #202 ("touch
+         * controls are nowhere to be found"). */
+        if (!sPads.empty()) {
+            Port_TouchControls_NotifyGamepadUsed();
+        }
         for (size_t i = 0; i < PORT_INPUT_COUNT; i++) {
             for (const Bind& b : sBinds[i]) {
                 if (b.pad >= 0 && b.pad < SDL_GAMEPAD_BUTTON_COUNT && b.pad == (SDL_GamepadButton)e->gbutton.button) {
@@ -1380,7 +1434,9 @@ extern "C" void Port_Config_HandleEvent(const SDL_Event* e) {
             }
         }
     } else if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e->gaxis.value > kAxisThreshold) {
-        Port_TouchControls_NotifyGamepadUsed();
+        if (!sPads.empty()) {
+            Port_TouchControls_NotifyGamepadUsed();
+        }
         for (size_t i = 0; i < PORT_INPUT_COUNT; i++) {
             for (const Bind& b : sBinds[i]) {
                 if (b.axis >= 0 && b.axis < SDL_GAMEPAD_AXIS_COUNT && b.axis == (SDL_GamepadAxis)e->gaxis.axis) {

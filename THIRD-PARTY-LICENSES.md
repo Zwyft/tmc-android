@@ -41,6 +41,7 @@ reproduced/redistributed here under their respective licenses.
 | nlohmann/json | https://github.com/nlohmann/json | MIT |
 | GuiLite | https://github.com/idea4good/GuiLite | Apache-2.0 |
 | SDL3 | https://github.com/libsdl-org/SDL | Zlib |
+| GBA SP overlay artwork | https://github.com/maestrosistema/GameBoy-Advance-SP-Overlay | No license file published; included with user-provided permission. Artwork attribution: MaestroSistema. |
 | zlib | https://zlib.net | Zlib |
 | libpng | http://www.libpng.org/pub/png/libpng.html | libpng (PNG Reference Library) |
 | rcheevos | https://github.com/RetroAchievements/rcheevos | MIT (© 2018 RetroAchievements.org) |

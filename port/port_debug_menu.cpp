@@ -33,6 +33,7 @@
 /* Console-Parity getter (port_runtime_config.cpp) — used to annotate the
  * noclip row; avoids pulling the whole runtime-config header in here. */
 extern "C" bool Port_Config_GetConsoleParity(void);
+extern "C" void Port_TouchControls_SetMenuOpen(bool open);
 
 extern "C" {
 
@@ -1243,6 +1244,7 @@ extern "C" void Port_DebugMenu_ToastFromExternal(const char* msg) {
 }
 
 extern "C" void Port_DebugMenu_Toggle(void) {
+    Port_TouchControls_SetMenuOpen(!sOpen);
     if (sOpen) {
         sOpen = false;
         sPageStack.clear();

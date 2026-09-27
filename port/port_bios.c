@@ -31,6 +31,16 @@
 #include "port_repro.h"
 
 static bool gQuitRequested = false;
+
+#ifdef __ANDROID__
+/* Android lifecycle flags (set from Port_PumpEvents, consumed at the
+ * frame boundary below): sWentBackground latches DID_ENTER_BACKGROUND so
+ * exactly one flush happens; sInBackground parks the game loop while the
+ * OS holds us in the background instead of spinning renders into a dead
+ * surface at full frame rate. */
+static int sWentBackground = 0;
+static int sInBackground = 0;
+#endif
 static bool sFastForward = false;
 static int sFrameNum = 0;
 
@@ -243,6 +253,19 @@ static void Port_PumpEvents(void) {
                 continue;
             }
         }
+#ifdef __ANDROID__
+        /* Android lifecycle: Home button / incoming call / screen timeout
+         * deliver DID_ENTER_BACKGROUND — the last reliable moment to flush
+         * state (the frame loop latches and parks). TERMINATING means the
+         * OS is about to kill the process: flush + request a clean unwind
+         * so the engine save path still runs if it can. */
+        if (e.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+            sWentBackground = 1;
+        } else if (e.type == SDL_EVENT_TERMINATING) {
+            sWentBackground = 1;
+            gQuitRequested = true;
+        }
+#endif
         if (e.type == SDL_EVENT_QUIT) {
             /* Route the close-button (X) / OS-quit signal through the
              * ImGui modal first so users get a chance to save. The
@@ -1055,6 +1078,42 @@ void VBlankIntrWait(void) {
 
     Port_PumpEvents();
     Port_UpdateInput();
+
+#ifdef __ANDROID__
+    if (sWentBackground) {
+        sWentBackground = 0;
+        sInBackground = 1;
+        /* Last reliable flush before Android freezes/stops our threads.
+         * Goes to the auto-save ring (never the user's manual quicksave
+         * slot), same snapshot path the periodic auto-save uses. */
+        {
+            extern int Port_QuickSave_SaveBackground(void);
+            Port_QuickSave_SaveBackground();
+        }
+        /* Stop pulling from the synth and release the audio device so
+         * nothing leaks into the background (and we don't keep mixing). */
+        Port_Audio_Suspend();
+        /* Park the game thread while backgrounded: present() fails into
+         * the void and the loop would burn battery at full tilt for
+         * nothing. WaitEvent blocks cheaply until the OS delivers
+         * foreground or teardown. */
+        while (sInBackground) {
+            SDL_Event e;
+            if (!SDL_WaitEvent(&e)) {
+                break;
+            }
+            Port_ImGui_HandleEvent(&e);
+            if (e.type == SDL_EVENT_WILL_ENTER_FOREGROUND) {
+                Port_Audio_Resume();
+                sInBackground = 0;
+            } else if (e.type == SDL_EVENT_TERMINATING || e.type == SDL_EVENT_QUIT) {
+                sInBackground = 0;
+                gQuitRequested = true;
+            }
+        }
+    }
+#endif
+
     Port_TestInputTick(gMain.ticks);
 
     /* Speedrun practice: advance the IGT frame counter and sample the input

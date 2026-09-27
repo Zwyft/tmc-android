@@ -868,6 +868,7 @@ extern "C" void Port_PPU_Init(SDL_Window* window) {
     if (SDL_Renderer* existing = SDL_GetRenderer(window)) {
         /* Try GPU first; if it claims, we drop the renderer. Otherwise
          * fall through to the normal SDL_Renderer reuse path. */
+        Port_TouchControls_ReleaseRenderer(existing);
         SDL_DestroyRenderer(existing);
     }
     /* Honour the user's renderer preference from the F8 menu. AUTO
@@ -1551,6 +1552,7 @@ extern "C" void Port_PPU_PresentFrame(void) {
         Port_PPU_ComputeViewportRects(outW, outH, presentW, presentH, &sx, &sy, &sw_stage, &sh_stage, &x, &y, &w, &h);
         SDL_FRect stage = { (float)sx, (float)sy, (float)sw_stage, (float)sh_stage };
         SDL_FRect dst = { (float)x, (float)y, (float)w, (float)h };
+        const bool gbaSpLayout = Port_TouchControls_GameViewport(outW, outH, &dst);
 
         SDL_Texture* tex = nullptr;
         SDL_ScaleMode scale;
@@ -1637,6 +1639,11 @@ extern "C" void Port_PPU_PresentFrame(void) {
             SDL_RenderTexture(sRenderer, tex, nullptr, &stage);
         }
 
+        if (gbaSpLayout) {
+            /* Draw the RGBA shell first (its display opening is transparent),
+             * then composite the live 3:2 GBA frame into that aperture. */
+            Port_TouchControls_RenderShell(sRenderer, outW, outH);
+        }
         Port_PPU_SetTextureScaleModeCached(tex, scale);
         SDL_RenderTexture(sRenderer, tex, nullptr, &dst);
         {
@@ -1817,7 +1824,10 @@ extern "C" void Port_OpenInGameSettingsModal(void) {
     if (!r) {
         return;
     }
-    if (!TmcSettings_RunModalInGame(w, r)) {
+    Port_TouchControls_SetMenuOpen(true);
+    const bool settingsSucceeded = TmcSettings_RunModalInGame(w, r);
+    Port_TouchControls_SetMenuOpen(false);
+    if (!settingsSucceeded) {
         SDL_Event ev;
         std::memset(&ev, 0, sizeof(ev));
         ev.type = SDL_EVENT_QUIT;
@@ -1875,6 +1885,7 @@ extern "C" void Port_PPU_Shutdown(void) {
     sTextureScaleModeTexture = nullptr;
     sTextureScaleModeValid = false;
     if (sRenderer) {
+        Port_TouchControls_ReleaseRenderer(sRenderer);
         SDL_DestroyRenderer(sRenderer);
         sRenderer = nullptr;
     }

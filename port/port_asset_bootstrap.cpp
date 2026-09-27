@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -319,11 +320,58 @@ void DrawCenteredTextBlock(SDL_Renderer* renderer, float fw, float fh, const std
 }
 
 void DrawProgressScreen(SDL_Window* window, const ProgressSnapshot& snap) {
-    PaintFrame(window, SDL_Color{ 12, 16, 22, 255 }, [&snap](SDL_Renderer* renderer, float fw, float fh, float scale) {
-        /* Header line, drawn once and unaffected by the ticking phase. */
+    /* Loader polish: this screen is up for the whole first-launch asset
+     * extraction, so the motion has to read as "working" at a glance
+     * without flickering. Everything below is driven off one clock and
+     * is phase-independent, so the animation never competes with the
+     * progress text it sits behind. */
+    static float sSmoothedFraction = -1.0f;
+    static Uint64 sLastTicks = 0;
+
+    const Uint64 nowTicks = SDL_GetTicks();
+    const float dt = sLastTicks == 0 ? 1.0f / 60.0f
+                                     : std::min(0.1f, static_cast<float>(nowTicks - sLastTicks) / 1000.0f);
+    sLastTicks = nowTicks;
+    const float time = static_cast<float>(nowTicks) * 0.001f;
+
+    PaintFrame(window, SDL_Color{ 12, 16, 22, 255 }, [&](SDL_Renderer* renderer, float fw, float fh, float scale) {
+        /* Background: vertical gradient + two slow drifting glows, so a
+         * multi-minute extraction does not look like a frozen frame. */
+        const int gradSteps = 24;
+        for (int i = 0; i < gradSteps; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(gradSteps - 1);
+            SDL_Color c{ static_cast<Uint8>(12 - 5.0f * t), static_cast<Uint8>(16 - 6.0f * t),
+                static_cast<Uint8>(26 - 9.0f * t), 255 };
+            SDL_FRect band{ 0.0f, fh * t, fw, fh / static_cast<float>(gradSteps) + 1.0f };
+            SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
+            SDL_RenderFillRect(renderer, &band);
+        }
+        auto softGlow = [&](float cx, float cy, float radius, SDL_Color color, int alpha) {
+            const int steps = 18;
+            for (int i = steps; i >= 1; --i) {
+                const float t = static_cast<float>(i) / static_cast<float>(steps);
+                const float r = radius * t;
+                const int a = static_cast<int>(alpha * (1.0f - t) * 0.9f);
+                SDL_Color c{ color.r, color.g, color.b, static_cast<Uint8>(a) };
+                SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
+                SDL_FRect rect{ cx - r, cy - r, r * 2.0f, r * 2.0f };
+                SDL_RenderFillRect(renderer, &rect);
+            }
+        };
+        const float breathe = 0.5f + 0.5f * std::sin(time * 1.1f);
+        softGlow(fw * (0.22f + 0.03f * std::sin(time * 0.31f)), fh * 0.20f, fw * 0.42f, { 40, 90, 165 },
+            static_cast<int>(10 + 8 * breathe));
+        softGlow(fw * (0.80f + 0.03f * std::cos(time * 0.26f)), fh * 0.78f, fw * 0.38f, { 32, 110, 100 },
+            static_cast<int>(8 + 7 * (1.0f - breathe)));
+
+        /* Header line with a breathing halo behind it. */
         constexpr std::string_view kHeader = "EXTRACTING ASSETS";
         const float headerW = MeasureText(kHeader, scale);
-        DrawText(renderer, kHeader, (fw - headerW) * 0.5f, fh * 0.30f, scale);
+        const float headerX = (fw - headerW) * 0.5f;
+        const float headerY = fh * 0.30f;
+        softGlow(headerX + headerW * 0.5f, headerY + 3.5f * scale, headerW * 0.85f, { 70, 140, 235 },
+            static_cast<int>(14 + 12 * breathe));
+        DrawText(renderer, kHeader, headerX, headerY, scale);
 
         /* Phase label (snapshot under lock since std::string isn't atomic). */
         std::string phaseName;
@@ -335,6 +383,17 @@ void DrawProgressScreen(SDL_Window* window, const ProgressSnapshot& snap) {
         const float phaseScale = std::max(1.5f, scale * 0.7f);
         const float phaseW = MeasureText(phaseLine, phaseScale);
         DrawText(renderer, phaseLine, (fw - phaseW) * 0.5f, fh * 0.46f, phaseScale, { 180, 200, 220, 255 });
+
+        /* Three dots that cycle so a long phase still looks alive. */
+        for (int i = 0; i < 3; ++i) {
+            const float cycle = std::fmod(time * 2.0f - static_cast<float>(i) * 0.28f, 3.0f);
+            const float lift = cycle >= 0.0f && cycle < 1.0f ? std::sin(cycle * 3.14159f) : 0.0f;
+            const float dotX = (fw + phaseW) * 0.5f + static_cast<float>(i) * scale * 4.0f + scale;
+            const float dotY = fh * 0.46f + 3.5f * phaseScale - lift * 1.6f * scale;
+            SDL_SetRenderDrawColor(renderer, 140, 175, 225, static_cast<Uint8>(90 + 150 * lift));
+            SDL_FRect dot{ dotX, dotY, scale * 1.4f, scale * 1.4f };
+            SDL_RenderFillRect(renderer, &dot);
+        }
 
         /* Progress bar geometry. */
         const float barWidth = fw * 0.65f;
@@ -355,16 +414,48 @@ void DrawProgressScreen(SDL_Window* window, const ProgressSnapshot& snap) {
         const double overall = std::clamp(
             (static_cast<double>(phaseIdx) + std::clamp(inPhase, 0.0, 1.0)) / static_cast<double>(phaseDen), 0.0, 1.0);
 
-        /* Bar border (light) + fill (warm accent). */
-        SDL_SetRenderDrawColor(renderer, 60, 70, 80, 255);
+        /* Bar. The fill eases toward the real fraction so each extraction
+         * step glides instead of stepping, and a soft highlight sweeps
+         * across it while work is happening. */
+        if (sSmoothedFraction < 0.0f) sSmoothedFraction = static_cast<float>(overall);
+        const float targetFraction = static_cast<float>(overall);
+        const float ease = 1.0f - std::exp(-dt * 6.0f);
+        sSmoothedFraction += (targetFraction - sSmoothedFraction) * ease;
+        if (targetFraction > sSmoothedFraction)
+            sSmoothedFraction = targetFraction;
+        const float shown = std::clamp(sSmoothedFraction, 0.0f, 1.0f);
+
+        SDL_SetRenderDrawColor(renderer, 46, 56, 70, 255);
         SDL_FRect border = { barX - 2.0f, barY - 2.0f, barWidth + 4.0f, barHeight + 4.0f };
         SDL_RenderFillRect(renderer, &border);
         SDL_SetRenderDrawColor(renderer, 18, 24, 32, 255);
         SDL_FRect inner = { barX, barY, barWidth, barHeight };
         SDL_RenderFillRect(renderer, &inner);
-        SDL_SetRenderDrawColor(renderer, 86, 168, 124, 255);
-        SDL_FRect fill = { barX, barY, static_cast<float>(barWidth * overall), barHeight };
-        SDL_RenderFillRect(renderer, &fill);
+
+        const float fillW = barWidth * shown;
+        const int fillSteps = std::max(1, static_cast<int>(barWidth / std::max(2.0f, scale)));
+        for (int i = 0; i < fillSteps; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(std::max(1, fillSteps - 1));
+            SDL_SetRenderDrawColor(renderer, static_cast<Uint8>(58 + 52.0f * t), static_cast<Uint8>(148 + 34.0f * t),
+                static_cast<Uint8>(214 - 78.0f * t), 255);
+            SDL_FRect seg{ barX + barWidth * t, barY, barWidth / static_cast<float>(fillSteps) + 1.0f, barHeight };
+            SDL_RenderFillRect(renderer, &seg);
+        }
+
+        /* Travelling highlight: only while there is work left, so a
+         * finished extraction settles into a calm full bar. */
+        if (shown < 0.999f && fillW > 8.0f) {
+            const float sweepT = std::fmod(time * 0.55f, 1.6f) / 1.6f;
+            const float head = fillW * sweepT;
+            const int steps = 12;
+            for (int i = steps; i >= 1; --i) {
+                const float t = static_cast<float>(i) / static_cast<float>(steps);
+                const float a = (1.0f - t) * 46.0f;
+                SDL_SetRenderDrawColor(renderer, 225, 240, 255, static_cast<Uint8>(a));
+                SDL_FRect glint{ barX + head - barWidth * 0.16f * t, barY, barWidth * 0.16f * t, barHeight };
+                SDL_RenderFillRect(renderer, &glint);
+            }
+        }
 
         /* Footer: "PHASE n/m   pp%" */
         char footer[64];
@@ -374,6 +465,18 @@ void DrawProgressScreen(SDL_Window* window, const ProgressSnapshot& snap) {
         const float footerW = MeasureText(footer, footerScale);
         DrawText(renderer, footer, (fw - footerW) * 0.5f, barY + barHeight + 1.5f * scale, footerScale,
                  { 160, 175, 195, 255 });
+
+        /* A few slow motes drifting upward: the same restrained motion
+         * language as the prelaunch screen, so startup feels one piece. */
+        for (int i = 0; i < 7; ++i) {
+            const float phase = time * 0.16f + static_cast<float>(i) * 0.7f;
+            const float x = fw * (0.12f + 0.11f * static_cast<float>(i)) + 6.0f * std::sin(phase * 1.7f);
+            const float y = fh * (0.90f - 0.22f * std::fmod(phase, 1.0f));
+            const float twinkle = 0.5f + 0.5f * std::sin(time * 1.3f + static_cast<float>(i) * 2.0f);
+            SDL_SetRenderDrawColor(renderer, 190, 215, 255, static_cast<Uint8>(26 + 46 * twinkle));
+            SDL_FRect mote{ x, y, scale * 1.1f, scale * 1.1f };
+            SDL_RenderFillRect(renderer, &mote);
+        }
     });
 }
 

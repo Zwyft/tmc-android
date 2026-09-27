@@ -36,4 +36,11 @@ int Port_Audio_GetReverbLevel(void);
 void Port_Audio_SetMasterVolume(float volume);
 float Port_Audio_GetMasterVolume(void);
 
+/* Android lifecycle: suspend/resume the whole audio device. Suspend keeps
+ * the SDL audio stream and mixer state intact but releases the device (and
+ * stops pulling from the synth), so no sound leaks into the background and
+ * the engine doesn't keep mixing for nobody. Resume restores it as-is. */
+void Port_Audio_Suspend(void);
+void Port_Audio_Resume(void);
+
 #endif

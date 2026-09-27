@@ -617,6 +617,30 @@ int Port_QuickSave_HasSnapshot(void) {
     return Port_QuickSave_HasSlot(0);
 }
 
+/* Android lifecycle flush: persist state to the auto-save ring the moment
+ * the OS moves us to the background (Home button, incoming call, screen
+ * off). Never touches the user's manual quicksave slot 0 — this is crash
+ * insurance, not a bookmark. Guarded so we don't snapshot before the game
+ * has booted far enough to hold a meaningful save (title screen, ROM
+ * picker, asset extraction). */
+int Port_QuickSave_SaveBackground(void) {
+    if (Port_Config_GetConsoleParity())
+        return 0;
+    if (gMain.task != TASK_GAME) {
+        return 0;
+    }
+    const int slot = sAutoNextSlot;
+    sAutoNextSlot++;
+    if (sAutoNextSlot >= AUTO_SLOT_BASE + NUM_AUTO_SLOTS) {
+        sAutoNextSlot = AUTO_SLOT_BASE;
+    }
+    if (Port_QuickSave_SaveSlot(slot)) {
+        fprintf(stderr, "[autosave] background flush -> ring slot %d\n", slot);
+        return 1;
+    }
+    return 0;
+}
+
 /* Auto-save — call once per frame from VBlankIntrWait. Saves to the
  * next slot in the auto-save ring if enabled and the configured
  * interval has elapsed since the last auto-save. */

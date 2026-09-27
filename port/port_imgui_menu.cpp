@@ -78,6 +78,7 @@ const char* Port_DebugQuery_FlagDesc(int bank, int index);
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -103,6 +104,10 @@ const char* Port_DebugMenu_Toast(void);                 /* NULL if expired */
 
 static bool sImGuiInited = false;
 static bool sRibbonEnabled = true; /* Office-style ribbon at top */
+static bool sPrelaunchOptionsOpen = false;
+#ifdef __ANDROID__
+static ImFont* sRobotoBold = nullptr;
+#endif
 static SDL_Window* sWindow = nullptr;
 static SDL_Renderer* sRenderer = nullptr;
 
@@ -174,31 +179,34 @@ extern "C" void Port_ImGui_Init(SDL_Window* window, SDL_Renderer* renderer) {
      * enough to be readable on the Deck at hand-held distance. */
     io.FontGlobalScale = 1.4f;
 #ifdef __ANDROID__
-    /* Touch pass: a tablet is driven by fingers at arm's length, not a
-     * pointer. Scale the whole style so every hit target clears ~48dp
-     * (Android's minimum comfortable touch target), fatten scrollbars
-     * into real drag handles, and bump the font again over the desktop
-     * 1.4x. ScaleAllSizes multiplies paddings/rounding/grab sizes in
-     * one shot so proportions stay intact. */
-    style.ScaleAllSizes(1.55f);
-    style.ScrollbarSize = 34.0f;                  /* fat, thumb-sized scroll handle  */
-    style.GrabMinSize = 30.0f;                    /* slider grabs                    */
-    style.FramePadding.y += 6.0f;                 /* taller rows = taller tap areas  */
-    style.ItemSpacing.y += 4.0f;                  /* breathing room between rows     */
-    style.TouchExtraPadding = ImVec2(6.0f, 6.0f); /* forgiving hit test */
-    io.FontGlobalScale = 2.0f;
+    /* Prefer Android's native Roboto face over ImGui's tiny bitmap fallback.
+     * The default remains available if a device does not expose the system
+     * font at this path. */
+    if (ImFont* roboto = io.Fonts->AddFontFromFileTTF("/system/fonts/Roboto-Regular.ttf", 26.0f)) {
+        io.FontDefault = roboto;
+        io.FontGlobalScale = 1.0f;
+    }
+    sRobotoBold = io.Fonts->AddFontFromFileTTF("/system/fonts/Roboto-Bold.ttf", 26.0f);
+    /* Touch pass: keep settings controls comfortably tappable, without
+     * enlarging text a second time on top of the native font. */
+    style.ScaleAllSizes(1.20f);
+    style.ScrollbarSize = 30.0f;
+    style.GrabMinSize = 28.0f;
+    style.FramePadding.y += 5.0f;
+    style.ItemSpacing.y += 2.0f;
+    style.TouchExtraPadding = ImVec2(6.0f, 6.0f);
 #endif
     ImVec4* colors = style.Colors;
     /* Greens — primary accent (a deep, slightly-warm green that
      * reads as "Minish leaf"), with brighter / dimmer variants. */
-    const ImVec4 accentDim = ImVec4(0.18f, 0.32f, 0.22f, 1.00f);
-    const ImVec4 accent = ImVec4(0.28f, 0.55f, 0.34f, 1.00f);
-    const ImVec4 accentLit = ImVec4(0.40f, 0.72f, 0.46f, 1.00f);
-    /* Surface — near-black with a faint cool tint so the green pops. */
-    const ImVec4 bgBase = ImVec4(0.058f, 0.07f, 0.07f, 0.96f);
-    const ImVec4 bgChild = ImVec4(0.085f, 0.10f, 0.10f, 1.00f);
-    const ImVec4 bgFrame = ImVec4(0.13f, 0.15f, 0.15f, 1.00f);
-    const ImVec4 bgFrameH = ImVec4(0.17f, 0.21f, 0.20f, 1.00f);
+    const ImVec4 accentDim = ImVec4(0.12f, 0.29f, 0.55f, 1.00f);
+    const ImVec4 accent = ImVec4(0.25f, 0.55f, 0.96f, 1.00f);
+    const ImVec4 accentLit = ImVec4(0.48f, 0.70f, 1.00f, 1.00f);
+    /* Samsung-inspired dark neutral surfaces with a clear blue accent. */
+    const ImVec4 bgBase = ImVec4(0.055f, 0.063f, 0.078f, 0.98f);
+    const ImVec4 bgChild = ImVec4(0.095f, 0.105f, 0.125f, 1.00f);
+    const ImVec4 bgFrame = ImVec4(0.14f, 0.15f, 0.18f, 1.00f);
+    const ImVec4 bgFrameH = ImVec4(0.19f, 0.21f, 0.25f, 1.00f);
 
     colors[ImGuiCol_WindowBg] = bgBase;
     colors[ImGuiCol_ChildBg] = bgChild;
@@ -337,31 +345,90 @@ extern "C" bool Port_ImGui_WantsTextInput(void) {
 extern "C" bool Port_ImGui_WantsMouse(void) {
     return sImGuiInited && ImGui::GetIO().WantCaptureMouse;
 }
+#ifdef __ANDROID__
+/* Touch drag-to-scroll state. ImGui has no native flick/drag scrolling — on
+ * desktop the wheel does it; on a phone nothing does, and long tabs (the
+ * Warp area list, Items) are unusable without it.
+ *
+ * A single raw wheel event per finger-motion sample is not enough on its
+ * own: touch samples are noisy and ImGui applies wheel deltas once per
+ * frame, so short drags get dropped. Instead we track the finger, apply a
+ * dead zone so a tap still reads as a tap, convert the remaining motion
+ * into wheel notches, and keep a decaying velocity so releasing mid-drag
+ * flings the list the way a native list would.
+ *
+ * Deliberately NOT gated on IsAnyItemActive: a finger resting on a row
+ * button activates it instantly, which would veto the very drag that's
+ * supposed to scroll. Buttons commit on RELEASE and ImGui cancels a press
+ * whose item scrolls out from under the pointer, so scrolling over buttons
+ * is safe. Horizontal wheel is dropped — sliders are horizontal drags;
+ * injecting dx would fight them. Text-input focus (drag = text selection)
+ * suppresses injection entirely. */
+struct AndroidDragScrollState {
+    SDL_TouchID finger = 0;
+    float lastY = 0.0f;
+    float velocity = 0.0f; /* px/frame, decays after release */
+    float pendingWheel = 0.0f; /* notches accumulated since the last tick */
+    bool active = false;
+};
+static AndroidDragScrollState sDragScroll;
+
+/* Consume accumulated wheel notches and the momentum term once per frame.
+ * Called at the top of Port_ImGui_Render / the prelaunch renderer so the
+ * injection lands before any window processes wheel input this frame. */
+static void Android_UpdateDragScroll(void) {
+    if (!sDragScroll.active)
+        return;
+    ImGuiIO& io = ImGui::GetIO();
+    /* One wheel notch scrolls about 67px in ImGui. */
+    const float kWheelPx = 67.0f;
+    float wheel = sDragScroll.pendingWheel / kWheelPx;
+    /* Momentum: continue the fling after the finger lifts, easing out so
+     * it settles instead of stopping dead. */
+    if (wheel == 0.0f && std::fabs(sDragScroll.velocity) > 0.4f) {
+        wheel = sDragScroll.velocity / kWheelPx;
+        sDragScroll.velocity *= 0.86f;
+    } else {
+        sDragScroll.velocity = 0.0f;
+    }
+    sDragScroll.pendingWheel = 0.0f;
+    if (wheel != 0.0f)
+        io.AddMouseWheelEvent(0.0f, wheel);
+}
+#endif
+
 extern "C" void Port_ImGui_HandleEvent(const SDL_Event* event) {
     if (!sImGuiInited)
         return;
     ImGui_ImplSDL3_ProcessEvent(event);
 #ifdef __ANDROID__
-    /* Touch drag-to-scroll: ImGui has no native flick/drag scrolling —
-     * on desktop the wheel does it; on a tablet nothing does, and long
-     * tabs (Warp's area list, Items) are unusable. Convert vertical
-     * finger motion into wheel events while a menu is up.
-     *
-     * Deliberately NOT gated on IsAnyItemActive: a finger resting on a
-     * row button activates it instantly, which would veto the very drag
-     * that's supposed to scroll. Buttons commit on RELEASE and ImGui
-     * cancels a press whose item scrolls out from under the pointer, so
-     * scrolling over buttons is safe. Horizontal wheel is dropped —
-     * sliders are horizontal drags; injecting dx would fight them and
-     * almost nothing scrolls horizontally. Text-input focus (drag =
-     * text selection) suppresses injection entirely. */
-    if (event->type == SDL_EVENT_FINGER_MOTION && !ImGui::GetIO().WantTextInput &&
-        (Port_DebugMenu_IsOpen() || Port_RandoFileMenu_IsOpen())) {
-        ImGuiIO& io = ImGui::GetIO();
-        const float dyPx = event->tfinger.dy * io.DisplaySize.y;
-        /* One wheel notch scrolls ~67px in ImGui; convert px so content
-         * tracks the finger 1:1-ish. Sign: finger down = content down. */
-        io.AddMouseWheelEvent(0.0f, dyPx / 67.0f);
+    if (!ImGui::GetIO().WantTextInput && (Port_DebugMenu_IsOpen() || Port_RandoFileMenu_IsOpen())) {
+        const float displayH = ImGui::GetIO().DisplaySize.y;
+        if (event->type == SDL_EVENT_FINGER_DOWN) {
+            AndroidDragScrollState& s = sDragScroll;
+            s.finger = event->tfinger.fingerID;
+            s.lastY = event->tfinger.y * displayH;
+            s.velocity = 0.0f;
+            s.pendingWheel = 0.0f;
+            s.active = true;
+        } else if (event->type == SDL_EVENT_FINGER_MOTION && sDragScroll.active &&
+                   event->tfinger.fingerID == sDragScroll.finger) {
+            const float y = event->tfinger.y * displayH;
+            const float dy = y - sDragScroll.lastY;
+            /* 6px dead zone: a tap never turns into a scroll, so buttons
+             * under the finger still fire. */
+            if (std::fabs(dy) > 6.0f) {
+                sDragScroll.pendingWheel += dy;
+                sDragScroll.lastY = y;
+                sDragScroll.velocity = sDragScroll.velocity * 0.5f + dy * 0.5f;
+            }
+        } else if ((event->type == SDL_EVENT_FINGER_UP || event->type == SDL_EVENT_FINGER_CANCELED) &&
+                   sDragScroll.active && event->tfinger.fingerID == sDragScroll.finger) {
+            sDragScroll.active = false;
+            sDragScroll.pendingWheel = 0.0f;
+            if (std::fabs(sDragScroll.velocity) > 12.0f) sDragScroll.velocity = std::max(-140.0f, std::min(140.0f, sDragScroll.velocity));
+            else sDragScroll.velocity = 0.0f;
+        }
     }
 #endif
 }
@@ -958,7 +1025,19 @@ static void DoQuitToTitle(bool saveFirst) {
 }
 static bool DrawRegionLanguageControls(bool prelaunch) {
     bool regionChanged = false;
-    ImGui::SeparatorText("ROM Region & Language");
+    if (prelaunch) {
+#ifdef __ANDROID__
+        if (!sPrelaunchOptionsOpen) {
+            return false;
+        }
+#else
+        if (!ImGui::CollapsingHeader("Startup options")) {
+            return false;
+        }
+#endif
+    } else {
+        ImGui::SeparatorText("ROM Region & Language");
+    }
 
     int preferredRegion = Port_Config_PreferredRegion();
     if (preferredRegion < -1 || preferredRegion > 2)
@@ -971,13 +1050,21 @@ static bool DrawRegionLanguageControls(bool prelaunch) {
         "JP (baserom_jp.gba)",
     };
     int regionIdx = preferredRegion + 1; // map -1..2 to 0..3
-    ImGui::SetNextItemWidth(270);
-    if (ImGui::Combo("Preferred ROM", &regionIdx, regionNames, 4)) {
+    if (prelaunch) {
+        ImGui::SetNextItemWidth(-1.0f);
+    } else {
+        ImGui::SetNextItemWidth(270.0f);
+    }
+    if (ImGui::Combo(prelaunch ? "Preferred region" : "Preferred ROM", &regionIdx, regionNames, 4)) {
         Port_Config_SetPreferredRegion(regionIdx - 1);
         regionChanged = true;
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled(prelaunch ? "(used when Play starts)" : "(restart required)");
+    if (prelaunch) {
+        ImGui::TextDisabled("Used when loading a game.");
+    } else {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(restart required)");
+    }
 
     constexpr int kLanguageCount = 6;
     int preferredLanguage = Port_Config_PreferredLanguage();
@@ -989,7 +1076,11 @@ static bool DrawRegionLanguageControls(bool prelaunch) {
     };
     int langIdx = preferredLanguage + 1; // map -1..5 to 0..6
 
-    ImGui::SetNextItemWidth(270);
+    if (prelaunch) {
+        ImGui::SetNextItemWidth(-1.0f);
+    } else {
+        ImGui::SetNextItemWidth(270.0f);
+    }
     if (ImGui::BeginCombo("Language", langNames[langIdx])) {
         for (int i = 0; i < 7; ++i) {
             bool isSupported = true;
@@ -1174,6 +1265,151 @@ static void DrawRibbonSavesTab(void) {
     }
     ImGui::Separator();
     (void)DrawRegionLanguageControls(false);
+}
+
+/* ---- Save editor ------------------------------------------------------
+ * A "skip the boring parts" surface over the live gSave. Everything here
+ * mutates the in-memory save only; nothing is written to disk until the
+ * player saves (auto-save, quicksave, or Save & Quit to Title), so an
+ * accidental preset is recoverable by reloading.
+ *
+ * Presets are the headline feature, so they lead as full-width rows with
+ * their consequence spelled out — a story skip is irreversible-feeling and
+ * the player deserves to know what they're skipping before they tap it. */
+static void DrawRibbonSaveEditorTab(void) {
+    const float width = ImGui::GetContentRegionAvail().x;
+    const bool narrow = width < 460.0f;
+
+    ImGui::TextUnformatted("Save editor");
+    ImGui::TextDisabled("Changes apply to the current session and persist on your next save.");
+    ImGui::Spacing();
+
+    /* ---- Story skip presets ---- */
+    ImGui::Separator();
+    if (narrow) {
+        ImGui::TextColored(ImVec4(0.62f, 0.74f, 1.0f, 1.0f), "SKIP THE PROLOGUE");
+    } else {
+        ImGui::TextColored(ImVec4(0.62f, 0.74f, 1.0f, 1.0f), "SKIP THE PROLOGUE");
+        ImGui::SameLine();
+        ImGui::TextDisabled("   jump past the opening cutscenes and story gates");
+    }
+
+    const int presetCount = Port_DebugQuery_SaveEditPresetCount();
+    for (int i = 0; i < presetCount; ++i) {
+        const char* name = Port_DebugQuery_SaveEditPresetName(i);
+        const char* hint = Port_DebugQuery_SaveEditPresetHint(i);
+        ImGui::PushID(i);
+        if (narrow) {
+            /* Label above, hint below, full-width tap target: on a phone the
+             * label and button can't share a line without truncating. */
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.13f, 0.19f, 0.30f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.19f, 0.28f, 0.42f, 1.0f));
+            if (ImGui::Button(name, ImVec2(-1.0f, 46.0f))) {
+                Port_DebugAction_SaveEdit_ApplyPreset(i);
+                Port_DebugMenu_ToastFromExternal(hint ? hint : "Applied");
+            }
+            ImGui::PopStyleColor(2);
+            if (hint) {
+                ImGui::TextDisabled("%s", hint);
+            }
+        } else {
+            if (ImGui::Button(name, ImVec2(190.0f, 0.0f))) {
+                Port_DebugAction_SaveEdit_ApplyPreset(i);
+                Port_DebugMenu_ToastFromExternal(hint ? hint : "Applied");
+            }
+            if (hint) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", hint);
+            }
+        }
+        ImGui::PopID();
+    }
+    ImGui::TextDisabled("Story skips are one-way: earlier cutscenes stay played.");
+    ImGui::Spacing();
+
+    /* ---- Quality of life ---- */
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.62f, 0.74f, 1.0f, 1.0f), "QUALITY OF LIFE");
+    ImGui::Spacing();
+
+    struct QoLAction {
+        const char* label;
+        const char* hint;
+        void (*run)(void);
+    };
+    const QoLAction qol[] = {
+        {"Full restock", "max wallet, bags, quiver, full heal", Port_DebugAction_SaveEdit_FullRestock},
+        {"Reveal world map", "unlocks the map and stops area hints", Port_DebugAction_SaveEdit_RevealMap},
+        {"Unlock all dungeons", "maps, compasses, big keys, small keys", Port_DebugAction_SaveEdit_UnlockDungeons},
+        {"Instant text", "skip message animation", Port_DebugAction_SaveEdit_InstantText},
+        {"All items", "full inventory", Port_DebugAction_GiveAllItems},
+        {"All kinstone fusions", "every fusion completed", Port_DebugAction_AllKinstones},
+        {"All figurines", "full pre-credits gallery", Port_DebugAction_AllFigurines130},
+    };
+    for (size_t i = 0; i < std::size(qol); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (narrow) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.11f, 0.15f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.17f, 0.23f, 0.31f, 1.0f));
+            if (ImGui::Button(qol[i].label, ImVec2(-1.0f, 44.0f))) {
+                qol[i].run();
+                Port_DebugMenu_ToastFromExternal(qol[i].label);
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::TextDisabled("%s", qol[i].hint);
+        } else {
+            if (ImGui::Button(qol[i].label, ImVec2(190.0f, 0.0f))) {
+                qol[i].run();
+                Port_DebugMenu_ToastFromExternal(qol[i].label);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", qol[i].hint);
+        }
+        ImGui::PopID();
+    }
+    ImGui::Spacing();
+
+    /* ---- Raw fields ---- */
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.62f, 0.74f, 1.0f, 1.0f), "SAVE FIELDS");
+    ImGui::TextDisabled("Hearts are stored in eighths, so 160 = 20 hearts.");
+    ImGui::Spacing();
+
+    /* Health reads in eighths; every other count is displayed verbatim.
+     * Health is the only field whose stored unit differs from its shown
+     * unit, so it gets its own scale factor rather than a blanket rule. */
+    const int fieldCount = Port_DebugQuery_SaveEditFieldCount();
+    for (int f = 0; f < fieldCount; ++f) {
+        const char* name = Port_DebugQuery_SaveEditFieldName(f);
+        if (!name) {
+            continue;
+        }
+        const int lo = Port_DebugQuery_SaveEditFieldMin(f);
+        const int hi = Port_DebugQuery_SaveEditFieldMax(f);
+        const int value = Port_DebugQuery_SaveEditFieldValue(f);
+
+        /* Max hearts is the only 0..0xA0 range a player thinks in hearts. */
+        const bool showHearts = (f == 1);
+        int displayValue = showHearts ? (value / 8) : value;
+        const int displayMin = showHearts ? (lo / 8) : lo;
+        const int displayMax = showHearts ? (hi / 8) : hi;
+
+        ImGui::PushID(f);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::SliderInt("##field", &displayValue, displayMin, displayMax, "%d")) {
+            Port_DebugAction_SaveEdit_SetField(f, showHearts ? (displayValue * 8) : displayValue);
+        }
+        /* Label after the slider so the row reads "control, then name", and
+         * a narrow layout still gets a full-width drag target. */
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(name);
+        ImGui::PopID();
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextWrapped("Nothing is written to the save file until you save. "
+                       "Use Save & Quit to Title on the Saves page to commit.");
 }
 
 static void DrawRibbonProfilesTab(void) {
@@ -1560,15 +1796,19 @@ static void DrawRibbonWarpTab(void) {
     /* Filter bar — type to narrow the area list. Empty filter = show
      * everything. Case-insensitive substring match. Steam Deck users
      * can ignore the filter and just scroll. */
-    ImGui::SetNextItemWidth(280);
+    const float warpWidth = ImGui::GetContentRegionAvail().x;
+    const bool warpCompact = warpWidth < 620.0f;
+    ImGui::SetNextItemWidth(warpCompact ? warpWidth : std::min(360.0f, warpWidth * 0.48f));
     ImGui::InputTextWithHint("##warpFilter", "filter by area name (e.g. 'castle')", sWarpFilter, sizeof(sWarpFilter));
-    ImGui::SameLine();
-    if (ImGui::Button("Clear"))
-        sWarpFilter[0] = '\0';
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    ImGui::TextDisabled("L/R bumpers = page jump");
+    if (warpCompact) {
+        if (ImGui::Button("Clear filter")) sWarpFilter[0] = '\0';
+        ImGui::TextDisabled("L/R bumpers = page jump");
+    } else {
+        ImGui::SameLine();
+        if (ImGui::Button("Clear")) sWarpFilter[0] = '\0';
+        ImGui::SameLine();
+        ImGui::TextDisabled("|  L/R bumpers = page jump");
+    }
 
     /* Free-coordinate teleport within the CURRENT room. Pre-fills from Link's
      * live position; in-game only. (All primitives already exist - this is the
@@ -1579,14 +1819,15 @@ static void DrawRibbonWarpTab(void) {
         unsigned short px = 0, py = 0;
         const bool inGame = Port_DebugQuery_PlayerXY(&px, &py) != 0;
         ImGui::TextUnformatted("Teleport (current room):");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80);
+        const bool compactTeleport = ImGui::GetContentRegionAvail().x < 440.0f;
+        if (!compactTeleport) ImGui::SameLine();
+        ImGui::SetNextItemWidth(compactTeleport ? 120.0f : 80.0f);
         ImGui::InputInt("X##tele", &sTeleX, 0);
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(80);
+        ImGui::SetNextItemWidth(compactTeleport ? 120.0f : 80.0f);
         ImGui::InputInt("Y##tele", &sTeleY, 0);
         ImGui::BeginDisabled(!inGame);
-        ImGui::SameLine();
+        if (!compactTeleport) ImGui::SameLine();
         if (ImGui::Button("Go##tele")) {
             unsigned short tx = (unsigned short)(sTeleX < 0 ? 0 : sTeleX);
             unsigned short ty = (unsigned short)(sTeleY < 0 ? 0 : sTeleY);
@@ -1596,7 +1837,7 @@ static void DrawRibbonWarpTab(void) {
                 Port_DebugMenu_ToastFromExternal(msg);
             }
         }
-        ImGui::SameLine();
+        if (!compactTeleport) ImGui::SameLine();
         if (ImGui::Button("Use Link's pos")) {
             sTeleX = px;
             sTeleY = py;
@@ -1640,10 +1881,15 @@ static void DrawRibbonWarpTab(void) {
     static char sLetterFilter = 0; /* 0 = no letter filter */
     {
         const char* kLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        if (ImGui::SmallButton("All##warpLet"))
-            sLetterFilter = 0;
+        if (ImGui::SmallButton("All##warpLet")) sLetterFilter = 0;
+        const float letterButtonWidth = ImGui::CalcTextSize("W").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const int lettersPerRow = std::max(1, static_cast<int>((ImGui::GetContentRegionAvail().x +
+                                      ImGui::GetStyle().ItemSpacing.x) /
+                                     (letterButtonWidth + ImGui::GetStyle().ItemSpacing.x)));
+        int letterColumn = 1;
         for (const char* p = kLetters; *p; ++p) {
-            ImGui::SameLine();
+            if (letterColumn < lettersPerRow) ImGui::SameLine();
+            else letterColumn = 0;
             char id[6];
             std::snprintf(id, sizeof(id), "%c##wl", *p);
             if (sLetterFilter == *p) {
@@ -1655,16 +1901,22 @@ static void DrawRibbonWarpTab(void) {
                 if (ImGui::SmallButton(id))
                     sLetterFilter = *p;
             }
+            ++letterColumn;
         }
     }
 
-    /* Scrollable area list. Each area is a collapsible header that
-     * reveals its rooms as a button grid when opened. Headers are
-     * controller-navigable (D-pad up/down) and the inner buttons take
-     * keyboard / gamepad nav too. */
+    /* The Android settings page already provides a full-height scrolling
+     * child. Avoid nesting another scroll region inside it: nested touch
+     * scrolling traps gestures above the room actions and feels erratic.
+     * Desktop keeps the dedicated list viewport. */
     ImGui::Separator();
-    const float listH = ImGui::GetContentRegionAvail().y - 4.0f;
-    if (ImGui::BeginChild("##warpList", ImVec2(0, listH), ImGuiChildFlags_NavFlattened, 0)) {
+    const float listH = std::max(1.0f, ImGui::GetContentRegionAvail().y - 4.0f);
+#ifdef __ANDROID__
+    const bool warpListVisible = true;
+#else
+    const bool warpListVisible = ImGui::BeginChild("##warpList", ImVec2(0, listH), ImGuiChildFlags_NavFlattened, 0);
+#endif
+    if (warpListVisible) {
         /* L1/R1 bumpers = page jump while this child is focused/hovered.
          * PgUp / PgDn keys give the same shortcut on keyboard. Home /
          * End jump to the ends of the list. Issue #76. */
@@ -1728,18 +1980,33 @@ static void DrawRibbonWarpTab(void) {
             ImGui::PushID((int)area);
             if (ImGui::CollapsingHeader(header)) {
                 ImGui::Indent();
-                /* Per-room buttons in a 3-column grid for compactness. Room 0
-                 * is simply the first grid entry below — there is no separate
-                 * "Warp here (room 0)" button, which duplicated it (v0.6). */
-                int col = 0;
+                ImGui::TextDisabled("Tap a room to warp there.");
+                /* On phones use a full-width action row under each expanded
+                 * area so the warp destination is immediately obvious and
+                 * never hidden beside or beneath adjacent room buttons. */
+                const float roomAvailWidth = ImGui::GetContentRegionAvail().x;
+                const float roomSpacing = ImGui::GetStyle().ItemSpacing.x;
+#ifdef __ANDROID__
+                const int roomColumns = 1;
+#else
+                const int roomColumns = std::clamp(static_cast<int>((roomAvailWidth + roomSpacing) /
+                                                    (132.0f + roomSpacing)), 1, 3);
+#endif
+                const float roomButtonWidth = std::max(80.0f,
+                    (roomAvailWidth - roomSpacing * (roomColumns - 1)) / roomColumns);
+                int roomColumn = 0;
                 for (int r = 0; r < roomCount; ++r) {
                     unsigned short w = 0, h = 0;
                     if (!Port_DebugQuery_RoomDimensions(a, (unsigned char)r, &w, &h))
                         continue;
-                    char roomLabel[48];
+                    char roomLabel[64];
+#ifdef __ANDROID__
+                    std::snprintf(roomLabel, sizeof(roomLabel), "Warp to room 0x%02X", r);
+#else
                     std::snprintf(roomLabel, sizeof(roomLabel), "Room 0x%02X", r);
+#endif
                     ImGui::PushID(r);
-                    if (ImGui::Button(roomLabel, ImVec2(120, 0))) {
+                    if (ImGui::Button(roomLabel, ImVec2(roomButtonWidth, 0))) {
                         unsigned short cx = 0, cy = 0;
                         unsigned char layer = 1;
                         if (!Port_DebugAction_WarpSpawnOverride(a, (unsigned char)r, &cx, &cy, &layer)) {
@@ -1756,9 +2023,9 @@ static void DrawRibbonWarpTab(void) {
                         }
                     }
                     ImGui::PopID();
-                    if ((col % 3) != 2)
-                        ImGui::SameLine();
-                    col++;
+                    ++roomColumn;
+                    if (roomColumn < roomColumns) ImGui::SameLine();
+                    else roomColumn = 0;
                 }
                 ImGui::Unindent();
             }
@@ -1768,7 +2035,9 @@ static void DrawRibbonWarpTab(void) {
             ImGui::TextDisabled("No areas match the filter.");
         }
     }
+#ifndef __ANDROID__
     ImGui::EndChild();
+#endif
 }
 
 /* Randomizer tab — wraps the native in-process engine at port/rando/.
@@ -3798,6 +4067,10 @@ static void DrawRibbon(void) {
                 DrawRibbonSavesTab();
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("Save Editor")) {
+                DrawRibbonSaveEditorTab();
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem("Profiles")) {
                 DrawRibbonProfilesTab();
                 ImGui::EndTabItem();
@@ -3872,6 +4145,384 @@ static void DrawRibbon(void) {
     ImGui::End();
     ImGui::PopStyleVar();
 }
+
+#ifdef __ANDROID__
+/* Phone settings surface. The desktop ribbon's 17 horizontal tabs and
+ * fixed-width tables are too cramped for landscape phones. Keep all the
+ * existing tab contents/actions, but navigate them through a short category
+ * rail plus a focused content pane. */
+struct AndroidSettingsPage {
+    const char* label;
+    void (*draw)(void);
+};
+struct AndroidSettingsCategory {
+    const char* label;
+    const char* hint;
+    int firstPage;
+    int pageCount;
+};
+
+static const AndroidSettingsPage kAndroidSettingsPages[] = {
+    {"Items", DrawRibbonItemsTab},
+    {"Saves", DrawRibbonSavesTab},
+    {"Profiles", DrawRibbonProfilesTab},
+    {"Equip", DrawRibbonEquipTab},
+    {"Editor", DrawRibbonSaveEditorTab},
+    {"Controls", DrawRibbonControlsTab},
+    {"Display", DrawRibbonDisplayTab},
+    {"Warp", DrawRibbonWarpTab},
+    {"Map Editor", DrawRibbonMapEditorTab},
+    {"Entities", DrawRibbonEntitiesTab},
+    {"Flags", DrawRibbonFlagsTab},
+    {"Memory", DrawRibbonMemoryTab},
+    {"Audio", DrawRibbonAudioTab},
+    {"Accessibility", DrawRibbonAccessibilityTab},
+    {"Randomizer", DrawRibbonRandomizerTab},
+    {"Reborn", DrawRibbonRebornTab},
+    {"Practice", DrawRibbonPracticeTab},
+#ifdef TMC_RA
+    {"Achievements", Port_RA_UI_DrawTab},
+#endif
+};
+
+static const AndroidSettingsCategory kAndroidSettingsCategories[] = {
+    {"GAME", "Items, saves & equipment", 0, 5},
+    {"CONTROLS", "Touch & bindings", 5, 1},
+    {"DISPLAY", "Screen & picture", 6, 1},
+    {"WORLD", "Warp & map editor", 7, 2},
+    {"DEBUG", "Entities, flags & memory", 9, 3},
+    {"AUDIO", "Music & sound", 12, 1},
+    {"ACCESSIBILITY", "Speech & assistance", 13, 1},
+#ifdef TMC_RA
+    {"EXTRAS", "Mods & achievements", 14, 4},
+#else
+    {"EXTRAS", "Randomizer & practice", 14, 3},
+#endif
+};
+static int sAndroidSettingsCategory = 0;
+static int sAndroidSettingsPage = 0;
+static bool sAndroidSettingsShowingCategories = true;
+
+/* Shared chrome colors so the header, cards and page chips stay in one
+ * visual family instead of each re-inventing its own blue. */
+namespace {
+constexpr ImVec4 kSurfaceBlue(0.38f, 0.62f, 1.0f, 1.0f);
+constexpr ImVec4 kSurfaceBlueSoft(0.16f, 0.30f, 0.50f, 1.0f);
+constexpr ImVec4 kSurfaceCard(0.075f, 0.093f, 0.125f, 1.0f);
+constexpr ImVec4 kSurfaceCardHover(0.105f, 0.130f, 0.175f, 1.0f);
+constexpr ImVec4 kSurfaceText(0.94f, 0.96f, 0.99f, 1.0f);
+constexpr ImVec4 kSurfaceTextDim(0.62f, 0.66f, 0.74f, 1.0f);
+} // namespace
+
+static bool AndroidSettingsCategoryCard(int index, const ImVec2& size) {
+    const AndroidSettingsCategory& category = kAndroidSettingsCategories[index];
+    ImGui::PushID(index);
+    ImGui::InvisibleButton("##settings_category_card", size);
+    const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float rounding = size.y * 0.28f;
+    /* Layout: badge on the left, label + hint stacked to its right, chevron
+     * pinned to the far right. All derived from the card rect so the card
+     * can grow or shrink without the contents drifting out of place. */
+    const float padX = size.y * 0.24f;
+    const float badge = size.y * 0.52f;
+    const ImVec2 badgeCenter(min.x + padX + badge * 0.5f, (min.y + max.y) * 0.5f);
+    draw->AddRectFilled(ImVec2(min.x, min.y + 4.0f), ImVec2(max.x, max.y + 4.0f), IM_COL32(0, 0, 0, 46), rounding);
+    draw->AddRectFilled(min, max, active ? IM_COL32(56, 68, 90, 255) : (hovered ? ImGui::ColorConvertFloat4ToU32(kSurfaceCardHover) : ImGui::ColorConvertFloat4ToU32(kSurfaceCard)), rounding);
+    draw->AddRect(min, max, hovered ? IM_COL32(120, 170, 255, 90) : IM_COL32(255, 255, 255, 14), rounding, 0, 1.0f);
+    draw->AddCircleFilled(badgeCenter, badge * 0.5f, hovered ? IM_COL32(70, 130, 235, 90) : IM_COL32(56, 104, 190, 66));
+    draw->AddCircle(badgeCenter, badge * 0.5f - 1.0f, IM_COL32(150, 195, 255, 60), 24, 1.2f);
+
+    /* Simple geometric glyph inside the badge (drawn, not font-based, so it
+     * is crisp at any density and never depends on glyph coverage). */
+    const ImU32 glyphColor = IM_COL32(206, 226, 255, 235);
+    const float g = badge * 0.22f;
+    const ImVec2 c = badgeCenter;
+    switch (index) {
+        case 0: /* GAME - sword */
+            draw->AddLine(ImVec2(c.x - g, c.y + g), ImVec2(c.x + g, c.y - g), glyphColor, 2.2f);
+            draw->AddLine(ImVec2(c.x - g * 0.2f, c.y - g * 0.2f), ImVec2(c.x + g * 0.6f, c.y + g * 0.6f), glyphColor, 2.2f);
+            break;
+        case 1: /* CONTROLS - d-pad */
+            draw->AddRectFilled(ImVec2(c.x - g * 0.35f, c.y - g), ImVec2(c.x + g * 0.35f, c.y + g), glyphColor, 2.0f);
+            draw->AddRectFilled(ImVec2(c.x - g, c.y - g * 0.35f), ImVec2(c.x + g, c.y + g * 0.35f), glyphColor, 2.0f);
+            break;
+        case 2: /* DISPLAY - screen */
+            draw->AddRect(ImVec2(c.x - g, c.y - g * 0.8f), ImVec2(c.x + g, c.y + g * 0.8f), glyphColor, 2, 0, 1.8f);
+            draw->AddLine(ImVec2(c.x - g * 0.5f, c.y + g * 1.1f), ImVec2(c.x + g * 0.5f, c.y + g * 1.1f), glyphColor, 1.8f);
+            break;
+        case 3: /* WORLD - pin */
+            draw->AddCircleFilled(c, g * 0.7f, glyphColor);
+            draw->AddTriangleFilled(ImVec2(c.x - g * 0.45f, c.y + g * 0.4f), ImVec2(c.x + g * 0.45f, c.y + g * 0.4f),
+                                    ImVec2(c.x, c.y + g * 1.15f), glyphColor);
+            break;
+        case 4: /* DEBUG - bug / sliders */
+            for (int i = 0; i < 3; ++i) {
+                const float y = c.y - g * 0.7f + static_cast<float>(i) * g * 0.7f;
+                draw->AddLine(ImVec2(c.x - g, y), ImVec2(c.x + g, y), glyphColor, 1.6f);
+            }
+            break;
+        case 5: /* AUDIO - note */
+            draw->AddCircleFilled(ImVec2(c.x - g * 0.35f, c.y + g * 0.5f), g * 0.42f, glyphColor);
+            draw->AddLine(ImVec2(c.x - g * 0.02f, c.y + g * 0.5f), ImVec2(c.x - g * 0.02f, c.y - g), glyphColor, 2.0f);
+            draw->AddLine(ImVec2(c.x - g * 0.02f, c.y - g), ImVec2(c.x + g * 0.8f, c.y - g * 0.65f), glyphColor, 2.0f);
+            break;
+        case 6: /* ACCESSIBILITY - person / speech */
+            draw->AddCircleFilled(ImVec2(c.x, c.y - g * 0.5f), g * 0.36f, glyphColor);
+            draw->AddRectFilled(ImVec2(c.x - g * 0.55f, c.y - g * 0.05f), ImVec2(c.x + g * 0.55f, c.y + g * 0.25f), glyphColor, 2.0f);
+            draw->AddRectFilled(ImVec2(c.x - g * 0.5f, c.y + g * 0.35f), ImVec2(c.x - g * 0.15f, c.y + g), glyphColor, 2.0f);
+            draw->AddRectFilled(ImVec2(c.x + g * 0.15f, c.y + g * 0.35f), ImVec2(c.x + g * 0.5f, c.y + g), glyphColor, 2.0f);
+            break;
+        default: /* EXTRAS - sparkle */
+            draw->AddCircleFilled(c, g * 0.3f, glyphColor);
+            for (int i = 0; i < 4; ++i) {
+                const float a = static_cast<float>(i) * 0.7853982f;
+                const ImVec2 d(std::cos(a), std::sin(a));
+                draw->AddLine(ImVec2(c.x + d.x * g * 0.55f, c.y + d.y * g * 0.55f),
+                              ImVec2(c.x + d.x * g, c.y + d.y * g), glyphColor, 1.8f);
+            }
+            break;
+    }
+
+    const float textX = badgeCenter.x + badge * 0.5f + padX * 0.7f;
+    const float chevronW = size.y * 0.28f;
+    const float textMaxW = std::max(60.0f, max.x - textX - chevronW - padX * 0.6f);
+    const ImVec2 titleSize = ImGui::CalcTextSize(category.label);
+    const float titleScale = std::min(1.0f, textMaxW / std::max(1.0f, titleSize.x));
+    const ImVec2 hintSize = ImGui::CalcTextSize(category.hint);
+    const float hintScale = std::min(0.92f, textMaxW / std::max(1.0f, hintSize.x));
+    const float textH = titleSize.y * titleScale + hintSize.y * hintScale;
+    const float titleY = (min.y + max.y) * 0.5f - textH * 0.5f - 2.0f;
+    if (titleScale >= 0.55f && sRobotoBold) ImGui::PushFont(sRobotoBold);
+    ImGui::SetWindowFontScale(titleScale);
+    draw->AddText(ImVec2(textX, titleY), IM_COL32_WHITE, category.label);
+    ImGui::SetWindowFontScale(1.0f);
+    if (titleScale >= 0.55f && sRobotoBold) ImGui::PopFont();
+    ImGui::SetWindowFontScale(hintScale);
+    draw->AddText(ImVec2(textX, titleY + titleSize.y * titleScale + 6.0f), IM_COL32(168, 178, 196, 255), category.hint);
+    ImGui::SetWindowFontScale(1.0f);
+
+    const ImVec2 chevron(max.x - padX - chevronW * 0.5f, (min.y + max.y) * 0.5f);
+    const float chev = chevronW * 0.3f;
+    draw->AddLine(ImVec2(chevron.x - chev, chevron.y - chev), ImVec2(chevron.x + chev * 0.4f, chevron.y),
+                  IM_COL32(180, 205, 255, hovered ? 235 : 150), 2.2f);
+    draw->AddLine(ImVec2(chevron.x + chev * 0.4f, chevron.y), ImVec2(chevron.x - chev, chevron.y + chev),
+                  IM_COL32(180, 205, 255, hovered ? 235 : 150), 2.2f);
+    ImGui::PopID();
+    return clicked;
+}
+
+static void DrawAndroidSettingsSurface(void) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(viewport->WorkSize, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.99f);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 16.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 24.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 18.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.045f, 0.065f, 0.99f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.055f, 0.067f, 0.09f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.12f, 0.15f, 0.20f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.17f, 0.22f, 0.30f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.13f, 0.17f, 0.23f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.19f, 0.25f, 0.34f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.18f, 0.22f, 0.29f, 0.82f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (ImGui::Begin("##android_settings_surface", nullptr, flags)) {
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const bool compact = avail.x < 780.0f || avail.y < 620.0f;
+        const int categoryCount = static_cast<int>(std::size(kAndroidSettingsCategories));
+        const int categoryIndex = std::clamp(sAndroidSettingsCategory, 0, categoryCount - 1);
+        const AndroidSettingsCategory& category = kAndroidSettingsCategories[categoryIndex];
+
+        /* Header: left column is brand + title, right column is the close
+         * button. Drawn as one row with two columns so the button can never
+         * be pushed under the title by a SameLine/SetCursorPosY mix-up. */
+        const float headerH = std::clamp(avail.y * 0.11f, 72.0f, 96.0f);
+        if (ImGui::BeginChild("##settings_header", ImVec2(0.0f, headerH), ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            const float closeW = std::clamp(ImGui::GetContentRegionAvail().x * 0.17f, 104.0f, 150.0f);
+            const float buttonH = std::min(52.0f, headerH - 16.0f);
+            ImGui::SetCursorPos(ImVec2(0.0f, (headerH - buttonH) * 0.5f));
+            if (ImGui::BeginTable("##settings_header_row", 2, ImGuiTableFlags_SizingStretchProp,
+                                  ImVec2(0.0f, buttonH))) {
+                ImGui::TableSetupColumn("##title", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("##close", ImGuiTableColumnFlags_WidthFixed, closeW);
+                ImGui::TableNextRow();
+                ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0.0f, 0.0f));
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(0.54f, 0.72f, 1.0f, 1.0f), "PROJECT PICORI");
+                ImGui::SetWindowFontScale(1.1f);
+                if (sRobotoBold) ImGui::PushFont(sRobotoBold);
+                ImGui::TextColored(kSurfaceText, "%s",
+                                   (compact && !sAndroidSettingsShowingCategories) ? category.label : "Game settings");
+                if (sRobotoBold) ImGui::PopFont();
+                ImGui::SetWindowFontScale(1.0f);
+                ImGui::TableNextColumn();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.16f, 0.23f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.28f, 0.39f, 1.0f));
+                if (ImGui::Button("DONE  ×", ImVec2(closeW, buttonH))) Port_DebugMenu_Toggle();
+                ImGui::PopStyleColor(2);
+                ImGui::PopStyleVar();
+                ImGui::EndTable();
+            }
+        }
+        ImGui::EndChild();
+
+        const float bodyH = std::max(0.0f, ImGui::GetContentRegionAvail().y);
+        if (ImGui::BeginChild("##settings_body", ImVec2(0.0f, bodyH), ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar)) {
+            if (compact && sAndroidSettingsShowingCategories) {
+                /* ---- Overview: grouped sections + card grid ---- */
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
+                if (sRobotoBold) ImGui::PushFont(sRobotoBold);
+                ImGui::SetWindowFontScale(1.15f);
+                ImGui::TextColored(kSurfaceText, "Customize your game");
+                ImGui::SetWindowFontScale(1.0f);
+                if (sRobotoBold) ImGui::PopFont();
+                ImGui::TextDisabled("Pick a section to tune items, controls, picture and more.");
+                ImGui::Spacing();
+
+                /* The grid fills the remaining height: 2 columns, 4 rows for
+                 * the 8 categories, so the overview never leaves a tall
+                 * empty band at the bottom of the screen. */
+                const float gap = ImGui::GetStyle().ItemSpacing.x;
+                const float gridTop = ImGui::GetCursorPosY() + 6.0f;
+                const float gridH = std::max(240.0f, ImGui::GetContentRegionAvail().y - gridTop - 56.0f);
+                const int columns = 2;
+                const int rows = (categoryCount + columns - 1) / columns;
+                const float cardW = (ImGui::GetContentRegionAvail().x - gap * (columns - 1)) / columns;
+                const float cardH = std::clamp((gridH - gap * (rows - 1)) / rows, 84.0f, 150.0f);
+                for (int i = 0; i < categoryCount; ++i) {
+                    if (i % columns != 0) ImGui::SameLine();
+                    if (AndroidSettingsCategoryCard(i, ImVec2(cardW, cardH))) {
+                        sAndroidSettingsCategory = i;
+                        sAndroidSettingsPage = kAndroidSettingsCategories[i].firstPage;
+                        sAndroidSettingsShowingCategories = false;
+                    }
+                }
+                /* Pin the footnote to the bottom of the overview so it never
+                 * floats in the middle of the card grid. */
+                ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY() + 10.0f,
+                                              bodyH - ImGui::GetStyle().FramePadding.y * 2.0f - 8.0f));
+                ImGui::TextDisabled("Changes apply to the current game session.");
+            } else {
+                /* ---- Detail: optional rail (wide), then page + content ---- */
+                const float railW = compact ? 0.0f : std::clamp(avail.x * 0.22f, 190.0f, 260.0f);
+                if (!compact) {
+                    ImGui::BeginChild("##settings_categories", ImVec2(railW, 0.0f), ImGuiChildFlags_Borders,
+                                      ImGuiWindowFlags_None);
+                    ImGui::SetCursorPos(ImVec2(20.0f, 18.0f));
+                    ImGui::TextDisabled("SETTINGS");
+                    ImGui::SetCursorPosY(54.0f);
+                    for (int i = 0; i < categoryCount; ++i) {
+                        ImGui::PushID(i);
+                        const bool selected = i == categoryIndex;
+                        if (selected) {
+                            ImGui::PushStyleColor(ImGuiCol_Button, kSurfaceBlueSoft);
+                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.35f, 0.51f, 1.0f));
+                        }
+                        ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.08f, 0.5f));
+                        if (ImGui::Button(kAndroidSettingsCategories[i].label, ImVec2(-1.0f, 58.0f))) {
+                            sAndroidSettingsCategory = i;
+                            sAndroidSettingsPage = kAndroidSettingsCategories[i].firstPage;
+                        }
+                        ImGui::PopStyleVar();
+                        if (selected) ImGui::PopStyleColor(2);
+                        ImGui::PopID();
+                        ImGui::Spacing();
+                    }
+                    ImGui::EndChild();
+                    ImGui::SameLine(0.0f, 14.0f);
+                }
+
+                if (ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+                                      ImGuiWindowFlags_None)) {
+                    /* Back affordance and section title share a row, so the
+                     * breadcrumb costs no extra vertical space. */
+                    if (compact) {
+                        const float backW = 132.0f;
+                        if (ImGui::Button("‹  SECTIONS", ImVec2(backW, 48.0f)))
+                            sAndroidSettingsShowingCategories = true;
+                        ImGui::SameLine();
+                        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
+                        if (sRobotoBold) ImGui::PushFont(sRobotoBold);
+                        ImGui::TextColored(kSurfaceText, "%s", category.label);
+                        if (sRobotoBold) ImGui::PopFont();
+                        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetTextLineHeight());
+                        ImGui::TextDisabled("%s", category.hint);
+                    } else {
+                        ImGui::TextColored(kSurfaceBlue, "%s", category.label);
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%s", category.hint);
+                    }
+
+                    /* Page selector: a segmented control spanning the panel
+                     * width. One row per category keeps the content area as
+                     * tall as possible. */
+                    if (category.pageCount > 1) {
+                        const int activePage = std::clamp(sAndroidSettingsPage, category.firstPage,
+                                                          category.firstPage + category.pageCount - 1);
+                        const float segGap = 4.0f;
+                        const float segW = (ImGui::GetContentRegionAvail().x - segGap * (category.pageCount - 1)) /
+                                           category.pageCount;
+                        const float segH = 46.0f;
+                        for (int i = 0; i < category.pageCount; ++i) {
+                            if (i > 0) ImGui::SameLine(0.0f, segGap);
+                            const int pageIndex = category.firstPage + i;
+                            const char* label = kAndroidSettingsPages[pageIndex].label;
+                            const bool selected = pageIndex == activePage;
+                            ImGui::PushID(pageIndex);
+                            ImGui::PushStyleColor(ImGuiCol_Button, selected ? kSurfaceBlueSoft : ImVec4(0.10f, 0.12f, 0.16f, 1.0f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? ImVec4(0.22f, 0.40f, 0.58f, 1.0f) : ImVec4(0.16f, 0.20f, 0.27f, 1.0f));
+                            if (selected) ImGui::PushStyleColor(ImGuiCol_Text, kSurfaceText);
+                            if (ImGui::Button(label, ImVec2(segW, segH))) sAndroidSettingsPage = pageIndex;
+                            if (selected) ImGui::PopStyleColor();
+                            ImGui::PopStyleColor(2);
+                            ImGui::PopID();
+                        }
+                    } else {
+                        sAndroidSettingsPage = category.firstPage;
+                    }
+
+                    /* Page content fills the rest. The Warp tab used to open
+                     * its own nested scroll region here; a second scroll area
+                     * nested inside this one swallows drags and made the room
+                     * buttons unreachable, so the child is sized explicitly
+                     * and is the single scroll surface for the page. */
+                    const float pageTop = ImGui::GetCursorPosY() + 10.0f;
+                    const float pageH = std::max(120.0f, ImGui::GetContentRegionAvail().y - pageTop);
+                    ImGui::SetCursorPosY(pageTop);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
+                    if (ImGui::BeginChild("##settings_page_scroll", ImVec2(0.0f, pageH), ImGuiChildFlags_Borders,
+                                          ImGuiWindowFlags_None)) {
+                        if (sAndroidSettingsPage >= category.firstPage &&
+                            sAndroidSettingsPage < category.firstPage + category.pageCount) {
+                            kAndroidSettingsPages[sAndroidSettingsPage].draw();
+                        }
+                    }
+                    ImGui::EndChild();
+                    ImGui::PopStyleVar();
+                }
+                ImGui::EndChild();
+            }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(7);
+    ImGui::PopStyleVar(5);
+}
+#endif
 
 /* Layout helpers — keep all the styling decisions in one place so it's
  * easy to tweak the look without hunting through draw code. */
@@ -4470,6 +5121,9 @@ extern "C" bool Port_ImGui_Render(void) {
         ImGui_ImplSDLRenderer3_NewFrame();
     }
     ImGui_ImplSDL3_NewFrame();
+#ifdef __ANDROID__
+    Android_UpdateDragScroll();
+#endif
     ImGui::NewFrame();
 
     /* Defensive cleanup on close-transition (open → closed). Without
@@ -4560,9 +5214,12 @@ extern "C" bool Port_ImGui_Render(void) {
     DrawQuitModal();
 
     if (Port_DebugMenu_IsOpen()) {
+#ifdef __ANDROID__
         if (sRibbonEnabled) {
-            DrawRibbon();
+            DrawAndroidSettingsSurface();
         } else {
+            /* Keep the compact classic menu available as a user option. */
+
             /* Render the deepest page only (legacy behaviour: submenu
              * hides its parent). */
             int depth = Port_DebugMenu_PageDepth() - 1;
@@ -4582,6 +5239,27 @@ extern "C" bool Port_ImGui_Render(void) {
             }
             ImGui::End();
         }
+#else
+        if (sRibbonEnabled) {
+            DrawRibbon();
+        } else {
+            /* Render the deepest legacy page (desktop classic mode). */
+            int depth = Port_DebugMenu_PageDepth() - 1;
+            if (depth >= 0) {
+                DrawMenuPage(depth);
+            }
+            ImGui::SetNextWindowBgAlpha(0.85f);
+            if (ImGui::Begin("##classic_to_ribbon", nullptr,
+                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_NoSavedSettings)) {
+                if (ImGui::SmallButton("Switch to ribbon mode")) {
+                    sRibbonEnabled = true;
+                    Port_Config_SetRibbonEnabled(true);
+                }
+            }
+            ImGui::End();
+        }
+#endif
     }
 
     /* Future-friendly: per-frame focus reader hook. ImGui doesn't
@@ -4679,6 +5357,9 @@ extern "C" bool Port_ImGui_RenderExtractProgress(const char* phase, float fracti
         ImGui_ImplSDLRenderer3_NewFrame();
     }
     ImGui_ImplSDL3_NewFrame();
+#ifdef __ANDROID__
+    Android_UpdateDragScroll();
+#endif
     ImGui::NewFrame();
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -4724,6 +5405,426 @@ static void CenteredText(const char* t) {
     ImGui::TextUnformatted(t);
 }
 
+enum class PrelaunchButtonIcon { Play, Folder, Switch };
+
+/* One UI-style capsule: use ImGui only for hit testing/navigation, then
+ * paint the control ourselves so its shape, badge and pressed feedback do
+ * not inherit ImGui's rectangular button treatment. */
+static bool PrelaunchPillButton(const char* id, const char* label, const ImVec2& requestedSize,
+                                bool primary, PrelaunchButtonIcon icon) {
+    const ImVec2 size(requestedSize.x > 0.0f ? requestedSize.x : ImGui::GetContentRegionAvail().x,
+                      requestedSize.y);
+    ImGui::InvisibleButton(id, size);
+    const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float radius = size.y * 0.5f;
+    const float pressedOffset = active ? 1.0f : 0.0f;
+    const ImU32 shadow = primary ? IM_COL32(0, 0, 0, 45) : IM_COL32(0, 0, 0, 28);
+    const ImU32 fill = primary
+                           ? (active ? IM_COL32(39, 105, 211, 255)
+                                     : (hovered ? IM_COL32(83, 151, 255, 255) : IM_COL32(63, 133, 245, 255)))
+                           : (active ? IM_COL32(47, 61, 83, 255)
+                                     : (hovered ? IM_COL32(39, 45, 57, 255) : IM_COL32(30, 34, 43, 255)));
+    const ImU32 edge = primary ? IM_COL32(255, 255, 255, 32) : IM_COL32(255, 255, 255, 18);
+    draw->AddRectFilled(ImVec2(min.x, min.y + 4.0f), ImVec2(max.x, max.y + 4.0f), shadow, radius);
+    draw->AddRectFilled(ImVec2(min.x, min.y + pressedOffset), ImVec2(max.x, max.y + pressedOffset), fill, radius);
+    draw->AddRect(ImVec2(min.x + 0.5f, min.y + 0.5f + pressedOffset),
+                  ImVec2(max.x - 0.5f, max.y - 0.5f + pressedOffset), edge, radius, 0, 1.0f);
+
+    const ImVec2 badge(min.x + size.y * 0.56f, min.y + size.y * 0.5f + pressedOffset);
+    const float badgeRadius = size.y * 0.31f;
+    draw->AddCircleFilled(badge, badgeRadius,
+                          primary ? IM_COL32(255, 255, 255, 42) : IM_COL32(117, 164, 239, 38));
+    const ImU32 glyph = primary ? IM_COL32(255, 255, 255, 255) : IM_COL32(166, 196, 249, 255);
+    if (icon == PrelaunchButtonIcon::Play) {
+        draw->AddTriangleFilled(ImVec2(badge.x - 5.0f, badge.y - 8.0f),
+                                ImVec2(badge.x - 5.0f, badge.y + 8.0f),
+                                ImVec2(badge.x + 8.0f, badge.y), glyph);
+    } else if (icon == PrelaunchButtonIcon::Folder) {
+        const float left = badge.x - 10.0f;
+        const float top = badge.y - 6.0f;
+        draw->AddRectFilled(ImVec2(left, top), ImVec2(badge.x - 1.0f, top + 4.0f), glyph, 2.0f);
+        draw->AddRectFilled(ImVec2(left, top + 2.0f), ImVec2(badge.x + 10.0f, badge.y + 7.0f), glyph, 2.0f);
+        draw->AddLine(ImVec2(left + 2.0f, badge.y + 1.0f), ImVec2(badge.x + 7.0f, badge.y + 1.0f),
+                      primary ? IM_COL32(54, 124, 231, 255) : IM_COL32(38, 54, 80, 255), 1.4f);
+    } else {
+        draw->AddLine(ImVec2(badge.x - 8.0f, badge.y - 4.0f), ImVec2(badge.x + 8.0f, badge.y - 4.0f), glyph, 2.0f);
+        draw->AddTriangleFilled(ImVec2(badge.x + 8.0f, badge.y - 8.0f),
+                                ImVec2(badge.x + 8.0f, badge.y),
+                                ImVec2(badge.x + 12.0f, badge.y - 4.0f), glyph);
+        draw->AddLine(ImVec2(badge.x + 8.0f, badge.y + 4.0f), ImVec2(badge.x - 8.0f, badge.y + 4.0f), glyph, 2.0f);
+        draw->AddTriangleFilled(ImVec2(badge.x - 8.0f, badge.y),
+                                ImVec2(badge.x - 8.0f, badge.y + 8.0f),
+                                ImVec2(badge.x - 12.0f, badge.y + 4.0f), glyph);
+    }
+
+    const ImVec2 textSize = ImGui::CalcTextSize(label);
+    draw->AddText(ImVec2(min.x + (size.x - textSize.x) * 0.5f,
+                         min.y + (size.y - textSize.y) * 0.5f + pressedOffset),
+                  IM_COL32(255, 255, 255, 255), label);
+    return clicked;
+}
+
+#ifdef __ANDROID__
+static void DrawOneUiPrelaunchScreen(bool romPresent, const char* version, const char* romName,
+                                    bool* outPlay, bool* outChangeRom) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float width = vp->WorkSize.x;
+    const float height = vp->WorkSize.y;
+    const float margin = std::clamp(width * 0.075f, 42.0f, 82.0f);
+    const float contentWidth = width - margin * 2.0f;
+    const ImVec2 origin = vp->WorkPos;
+    const ImVec4 primaryBlue(0.25f, 0.55f, 0.96f, 1.0f);
+    const ImVec4 textPrimary(0.95f, 0.95f, 0.97f, 1.0f);
+    const ImVec4 textSecondary(0.66f, 0.68f, 0.74f, 1.0f);
+    ImDrawList* background = ImGui::GetBackgroundDrawList();
+    background->AddRectFilledMultiColor(
+        origin, ImVec2(origin.x + width, origin.y + height),
+        IM_COL32(18, 21, 29, 255), IM_COL32(18, 21, 29, 255),
+        IM_COL32(8, 10, 15, 255), IM_COL32(8, 10, 15, 255));
+    const float ambientTime = static_cast<float>(SDL_GetTicks()) * 0.001f;
+    const ImVec2 ambientGlowA(origin.x + width * (0.76f + std::sin(ambientTime * 0.11f) * 0.025f),
+                              origin.y + height * 0.19f);
+    const ImVec2 ambientGlowB(origin.x + width * 0.18f,
+                              origin.y + height * (0.68f + std::sin(ambientTime * 0.09f + 1.4f) * 0.02f));
+    background->AddCircleFilled(ambientGlowA, width * 0.62f, IM_COL32(41, 91, 169, 9), 72);
+    background->AddCircleFilled(ambientGlowB, width * 0.48f, IM_COL32(26, 111, 102, 8), 72);
+
+    ImGui::SetNextWindowPos(origin, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(vp->WorkSize, ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+    if (ImGui::Begin("##oneui_prelaunch", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground)) {
+        const ImTextureID logo = Port_PrelaunchLogo_GetTexId();
+        const float brandY = origin.y + height * 0.018f;
+        if (logo != 0) {
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, brandY));
+            ImGui::Image(logo, ImVec2(70.0f, 70.0f));
+        }
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + margin + 84.0f, brandY + 9.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, primaryBlue);
+        ImGui::TextUnformatted("PROJECT PICORI");
+        ImGui::PopStyleColor();
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + margin + 84.0f, brandY + 40.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, textSecondary);
+        ImGui::Text("GAME LIBRARY  /  v%s", version ? version : "?");
+        ImGui::PopStyleColor();
+
+        // A compact, custom-drawn adventure hero gives the screen a focal
+        // point without forcing the main action below the fold.
+        const float heroY = origin.y + height * 0.075f;
+        const float heroHeight = std::clamp(height * 0.29f, 590.0f, 700.0f);
+        const ImVec2 heroMin(origin.x + margin, heroY);
+        const ImVec2 heroMax(heroMin.x + contentWidth, heroY + heroHeight);
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(ImVec2(heroMin.x, heroMin.y + 8.0f), ImVec2(heroMax.x, heroMax.y + 8.0f),
+                            IM_COL32(0, 0, 0, 55), 36.0f);
+        draw->AddRectFilledMultiColor(heroMin, heroMax,
+                                      IM_COL32(35, 85, 151, 255), IM_COL32(40, 71, 127, 255),
+                                      IM_COL32(20, 36, 62, 255), IM_COL32(24, 47, 80, 255));
+        draw->AddRect(heroMin, heroMax, IM_COL32(255, 255, 255, 32), 36.0f, 0, 1.0f);
+        const float animationTime = static_cast<float>(SDL_GetTicks()) * 0.001f;
+        const float logoFloat = std::sin(animationTime * 1.05f) * 7.0f;
+        const float ringPulse = (std::sin(animationTime * 1.3f) + 1.0f) * 0.5f;
+        const float artX = heroMax.x - std::min(contentWidth * 0.31f, 184.0f);
+        const float artY = heroMin.y + heroHeight * 0.43f + logoFloat;
+        const ImVec2 heroCenter(artX, artY);
+        draw->AddCircleFilled(heroCenter, 126.0f, IM_COL32(99, 155, 235, 38));
+        draw->AddCircle(heroCenter, 148.0f + ringPulse * 9.0f, IM_COL32(174, 205, 255, 47), 72, 2.0f);
+        draw->AddCircle(heroCenter, 178.0f + (1.0f - ringPulse) * 12.0f, IM_COL32(174, 205, 255, 30), 72, 2.0f);
+        draw->AddCircle(heroCenter, 210.0f + ringPulse * 10.0f, IM_COL32(174, 205, 255, 19), 72, 1.5f);
+        // A slow moving glint on the outer orbit makes the hero feel alive
+        // without flashing or competing with the game art.
+        const float glintAngle = std::fmod(animationTime * 0.32f, 6.2831853f);
+        draw->PathClear();
+        draw->PathArcTo(heroCenter, 222.0f, glintAngle, glintAngle + 0.38f, 24);
+        draw->PathStroke(IM_COL32(198, 222, 255, 52), ImDrawFlags_None, 3.0f);
+
+        // Four slow orbiting lights and intermittent four-point sparkles frame
+        // the logo. Low contrast and slow motion keep the loop ambient.
+        for (int i = 0; i < 4; ++i) {
+            const float phase = animationTime * 0.48f + static_cast<float>(i) * 1.5707963f;
+            const float orbitRadiusX = 154.0f + 9.0f * std::sin(animationTime * 0.72f + i);
+            const float orbitRadiusY = 125.0f + 8.0f * std::cos(animationTime * 0.61f + i);
+            const ImVec2 mote(heroCenter.x + std::cos(phase) * orbitRadiusX,
+                              heroCenter.y + std::sin(phase) * orbitRadiusY);
+            const float twinkle = (std::sin(animationTime * 2.0f + i * 1.7f) + 1.0f) * 0.5f;
+            const ImU32 moteColor = i % 2 == 0 ? IM_COL32(206, 227, 255, 120 + static_cast<int>(twinkle * 110))
+                                                : IM_COL32(255, 220, 143, 100 + static_cast<int>(twinkle * 105));
+            draw->AddCircleFilled(mote, 2.5f + twinkle * 2.0f, moteColor);
+            if (twinkle > 0.58f) {
+                const float sparkle = 4.0f + twinkle * 4.0f;
+                draw->AddLine(ImVec2(mote.x - sparkle, mote.y), ImVec2(mote.x + sparkle, mote.y), moteColor, 1.5f);
+                draw->AddLine(ImVec2(mote.x, mote.y - sparkle), ImVec2(mote.x, mote.y + sparkle), moteColor, 1.5f);
+            }
+        }
+
+        // Layered forest hills drift at different, very subtle rates for
+        // parallax. The paths and colors stay stable; only the ridge moves.
+        const float groundY = heroMax.y - 26.0f;
+        const float farDrift = std::sin(animationTime * 0.34f) * 7.0f;
+        const float nearDrift = std::sin(animationTime * 0.48f + 0.9f) * 10.0f;
+        const float ridge1[] = {22.0f, -20.0f, -62.0f, -10.0f, -54.0f, -6.0f, -36.0f};
+        const float ridge2[] = {16.0f, -18.0f, 12.0f, -27.0f, 10.0f};
+        const float x1[] = {18.0f, 18.0f, contentWidth * 0.20f, contentWidth * 0.38f,
+                            contentWidth * 0.55f, contentWidth * 0.73f, contentWidth - 18.0f};
+        const float x2[] = {18.0f, contentWidth * 0.28f, contentWidth * 0.47f,
+                            contentWidth * 0.69f, contentWidth - 18.0f};
+        draw->PathLineTo(ImVec2(heroMin.x + 18.0f, groundY + 22.0f));
+        for (int i = 0; i < 7; ++i) {
+            draw->PathLineTo(ImVec2(heroMin.x + x1[i] + farDrift, groundY + ridge1[i]));
+        }
+        draw->PathLineTo(ImVec2(heroMax.x - 18.0f, heroMax.y - 18.0f));
+        draw->PathLineTo(ImVec2(heroMin.x + 18.0f, heroMax.y - 18.0f));
+        draw->PathFillConvex(IM_COL32(20, 73, 81, 180));
+        draw->PathLineTo(ImVec2(heroMin.x + 18.0f, groundY + 16.0f));
+        for (int i = 0; i < 5; ++i) {
+            draw->PathLineTo(ImVec2(heroMin.x + x2[i] + nearDrift, groundY + ridge2[i]));
+        }
+        draw->PathLineTo(ImVec2(heroMax.x - 18.0f, heroMax.y - 18.0f));
+        draw->PathLineTo(ImVec2(heroMin.x + 18.0f, heroMax.y - 18.0f));
+        draw->PathFillConvex(IM_COL32(30, 108, 105, 205));
+        const ImVec2 tinyStars[] = {{heroMin.x + contentWidth * 0.55f, heroMin.y + 52.0f},
+                                    {heroMin.x + contentWidth * 0.69f, heroMin.y + 88.0f},
+                                    {heroMin.x + contentWidth * 0.86f, heroMin.y + 36.0f}};
+        for (int i = 0; i < 3; ++i) {
+            const float alpha = (std::sin(animationTime * 1.7f + i * 2.1f) + 1.0f) * 0.5f;
+            draw->AddCircleFilled(tinyStars[i], 2.0f + alpha * 2.0f,
+                                  IM_COL32(225, 238, 255, 105 + static_cast<int>(alpha * 140)));
+        }
+        if (logo != 0) {
+            const float logoBreath = 1.0f + std::sin(animationTime * 1.25f + 0.7f) * 0.014f;
+            const float avatar = std::min(heroHeight * 0.43f, 190.0f) * logoBreath;
+            ImGui::SetCursorScreenPos(ImVec2(artX - avatar * 0.5f, artY - avatar * 0.5f - 8.0f));
+            ImGui::Image(logo, ImVec2(avatar, avatar));
+        }
+        ImGui::SetCursorScreenPos(ImVec2(heroMin.x + 34.0f, heroMin.y + 31.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.73f, 0.85f, 1.0f, 1.0f));
+        ImGui::TextUnformatted("AN ADVENTURE AWAITS");
+        ImGui::PopStyleColor();
+        ImGui::SetCursorScreenPos(ImVec2(heroMin.x + 34.0f, heroMin.y + 83.0f));
+        if (sRobotoBold) ImGui::PushFont(sRobotoBold);
+        ImGui::PushStyleColor(ImGuiCol_Text, textPrimary);
+        ImGui::SetWindowFontScale(1.35f);
+        ImGui::TextUnformatted("The Minish\nCap");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        if (sRobotoBold) ImGui::PopFont();
+        ImGui::SetCursorScreenPos(ImVec2(heroMin.x + 34.0f, heroMax.y - 62.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.83f, 0.89f, 0.98f, 1.0f));
+        ImGui::TextUnformatted(romPresent ? "Ready when you are." : "One tiny hero. One big journey.");
+        ImGui::PopStyleColor();
+
+        const float cardY = heroMax.y + 18.0f;
+        const float statusHeight = 142.0f;
+        const ImVec2 cardMin(origin.x + margin, cardY);
+        const ImVec2 cardMax(cardMin.x + contentWidth, cardY + statusHeight);
+        draw->AddRectFilled(ImVec2(cardMin.x, cardMin.y + 5.0f), ImVec2(cardMax.x, cardMax.y + 5.0f),
+                            IM_COL32(0, 0, 0, 32), 30.0f);
+        draw->AddRectFilled(cardMin, cardMax, IM_COL32(28, 33, 43, 255), 30.0f);
+        draw->AddRect(cardMin, cardMax, IM_COL32(255, 255, 255, 15), 30.0f, 0, 1.0f);
+        const ImVec2 iconCenter(cardMin.x + 48.0f, cardMin.y + statusHeight * 0.5f);
+        if (romPresent) {
+            draw->AddCircleFilled(iconCenter, 25.0f, IM_COL32(57, 139, 95, 255));
+            draw->AddLine(ImVec2(iconCenter.x - 9, iconCenter.y), ImVec2(iconCenter.x - 2, iconCenter.y + 7),
+                          IM_COL32(255, 255, 255, 255), 3.0f);
+            draw->AddLine(ImVec2(iconCenter.x - 2, iconCenter.y + 7), ImVec2(iconCenter.x + 11, iconCenter.y - 9),
+                          IM_COL32(255, 255, 255, 255), 3.0f);
+        } else {
+            draw->AddCircleFilled(iconCenter, 25.0f, IM_COL32(52, 112, 202, 255));
+            draw->AddLine(ImVec2(iconCenter.x, iconCenter.y - 11), ImVec2(iconCenter.x, iconCenter.y + 11),
+                          IM_COL32(255, 255, 255, 255), 3.0f);
+            draw->AddLine(ImVec2(iconCenter.x - 11, iconCenter.y), ImVec2(iconCenter.x + 11, iconCenter.y),
+                          IM_COL32(255, 255, 255, 255), 3.0f);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(cardMin.x + 88.0f, cardMin.y + 18.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, romPresent ? ImVec4(0.52f, 0.82f, 0.64f, 1) : primaryBlue);
+        ImGui::TextUnformatted(romPresent ? "GAME FILE READY" : "GAME FILE NEEDED");
+        ImGui::PopStyleColor();
+        ImGui::SetCursorScreenPos(ImVec2(cardMin.x + 88.0f, cardMin.y + 50.0f));
+        if (sRobotoBold) ImGui::PushFont(sRobotoBold);
+        ImGui::PushStyleColor(ImGuiCol_Text, textPrimary);
+        ImGui::SetWindowFontScale(1.08f);
+        ImGui::TextWrapped("%s", romPresent ? (romName ? romName : "The Minish Cap") : "Select your Minish Cap .gba file");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        if (sRobotoBold) ImGui::PopFont();
+        ImGui::SetCursorScreenPos(ImVec2(cardMin.x + 88.0f, cardMin.y + 96.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, textSecondary);
+        ImGui::TextUnformatted(romPresent ? "Verified locally on this device" : "Your file stays private on this device");
+        ImGui::PopStyleColor();
+
+        const float primaryY = cardMax.y + 16.0f;
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, primaryY));
+        const bool primaryClicked = PrelaunchPillButton("##oneui_primary", romPresent ? "Play game" : "Choose game file",
+                                                        ImVec2(contentWidth, 100.0f), true,
+                                                        romPresent ? PrelaunchButtonIcon::Play : PrelaunchButtonIcon::Folder);
+        if (primaryClicked) {
+            if (romPresent && outPlay) *outPlay = true;
+            if (!romPresent && outChangeRom) *outChangeRom = true;
+        }
+
+        float settingsY = primaryY + 122.0f;
+        if (romPresent) {
+            const float secondaryY = primaryY + 122.0f;
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, secondaryY));
+            if (PrelaunchPillButton("##oneui_secondary", "Change game file", ImVec2(contentWidth, 86.0f),
+                                    false, PrelaunchButtonIcon::Switch) && outChangeRom) {
+                *outChangeRom = true;
+            }
+            settingsY = secondaryY + 98.0f;
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, settingsY));
+        ImGui::InvisibleButton("##startup_settings", ImVec2(contentWidth, 68.0f));
+        const bool settingsClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+        const bool settingsHovered = ImGui::IsItemHovered();
+        const ImVec2 settingsMin = ImGui::GetItemRectMin();
+        const ImVec2 settingsMax = ImGui::GetItemRectMax();
+        draw->AddRectFilled(settingsMin, settingsMax,
+                            settingsHovered ? IM_COL32(39, 45, 57, 255) : IM_COL32(28, 33, 43, 255), 36.0f);
+        draw->AddCircleFilled(ImVec2(settingsMin.x + 38.0f, (settingsMin.y + settingsMax.y) * 0.5f), 19.0f,
+                              IM_COL32(54, 112, 202, 95));
+        const ImVec2 gearCenter(settingsMin.x + 38.0f, (settingsMin.y + settingsMax.y) * 0.5f);
+        draw->AddCircle(gearCenter, 8.0f, IM_COL32(192, 211, 245, 255), 8, 2.0f);
+        draw->AddCircleFilled(gearCenter, 2.5f, IM_COL32(192, 211, 245, 255));
+        ImGui::SetCursorScreenPos(ImVec2(settingsMin.x + 72.0f, settingsMin.y + 21.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, textPrimary);
+        ImGui::TextUnformatted(sPrelaunchOptionsOpen ? "Hide startup settings" : "Startup settings");
+        ImGui::PopStyleColor();
+        if (settingsClicked) sPrelaunchOptionsOpen = !sPrelaunchOptionsOpen;
+
+        if (sPrelaunchOptionsOpen) {
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, settingsY + 86.0f));
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.11f, 0.13f, 0.17f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 28.0f);
+            if (ImGui::BeginChild("##oneui_startup_options", ImVec2(contentWidth, std::min(280.0f, height * 0.16f)),
+                                  true, ImGuiWindowFlags_NoScrollbar)) {
+                ImGui::SetCursorPos(ImVec2(26.0f, 22.0f));
+                DrawRegionLanguageControls(true);
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+        }
+
+        const float footerY = settingsY + 88.0f;
+        if (!sPrelaunchOptionsOpen) {
+            const float featureY = footerY + 18.0f;
+            const float gap = 12.0f;
+            const float featureWidth = (contentWidth - gap * 2.0f) / 3.0f;
+            const char* labels[] = {"PRIVATE", "TOUCH READY", "GBA CLASSIC"};
+            const char* glyphs[] = {"✓", "✦", "4:3"};
+            for (int i = 0; i < 3; ++i) {
+                const float x = origin.x + margin + i * (featureWidth + gap);
+                ImGui::SetCursorScreenPos(ImVec2(x, featureY));
+                ImGui::InvisibleButton(labels[i], ImVec2(featureWidth, 92.0f));
+                const ImVec2 bmin = ImGui::GetItemRectMin();
+                const ImVec2 bmax = ImGui::GetItemRectMax();
+                const bool hovered = ImGui::IsItemHovered();
+                draw->AddRectFilled(bmin, bmax, hovered ? IM_COL32(37, 44, 57, 255) : IM_COL32(26, 31, 41, 255), 26.0f);
+                draw->AddCircleFilled(ImVec2((bmin.x + bmax.x) * 0.5f, bmin.y + 29.0f), 16.0f,
+                                      IM_COL32(52, 112, 202, 85));
+                const ImVec2 glyphSize = ImGui::CalcTextSize(glyphs[i]);
+                draw->AddText(ImVec2((bmin.x + bmax.x - glyphSize.x) * 0.5f,
+                                     bmin.y + 29.0f - glyphSize.y * 0.5f),
+                              IM_COL32(193, 215, 255, 255), glyphs[i]);
+                const ImVec2 labelSize = ImGui::CalcTextSize(labels[i]);
+                const float labelScale = std::min(1.0f, (featureWidth - 8.0f) / std::max(1.0f, labelSize.x));
+                ImGui::SetWindowFontScale(labelScale);
+                draw->AddText(ImVec2((bmin.x + bmax.x - labelSize.x * labelScale) * 0.5f, bmin.y + 61.0f),
+                              IM_COL32(204, 210, 222, 255), labels[i]);
+                ImGui::SetWindowFontScale(1.0f);
+            }
+            const float showcaseY = featureY + 104.0f;
+            const float showcaseHeight = std::min(286.0f, height - showcaseY - 126.0f);
+            const ImVec2 showcaseMin(origin.x + margin, showcaseY);
+            const ImVec2 showcaseMax(showcaseMin.x + contentWidth, showcaseY + showcaseHeight);
+            draw->AddRectFilled(ImVec2(showcaseMin.x, showcaseMin.y + 5.0f),
+                                ImVec2(showcaseMax.x, showcaseMax.y + 5.0f), IM_COL32(0, 0, 0, 30), 30.0f);
+            draw->AddRectFilled(showcaseMin, showcaseMax, IM_COL32(22, 27, 37, 255), 30.0f);
+            draw->AddRect(showcaseMin, showcaseMax, IM_COL32(255, 255, 255, 15), 30.0f, 0, 1.0f);
+
+            ImGui::SetCursorScreenPos(ImVec2(showcaseMin.x + 26.0f, showcaseMin.y + 25.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, primaryBlue);
+            ImGui::TextUnformatted("MADE FOR HANDHELD PLAY");
+            ImGui::PopStyleColor();
+            ImGui::SetCursorScreenPos(ImVec2(showcaseMin.x + 26.0f, showcaseMin.y + 64.0f));
+            if (sRobotoBold) ImGui::PushFont(sRobotoBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, textPrimary);
+            ImGui::SetWindowFontScale(1.08f);
+            ImGui::TextUnformatted("Classic controls.\nMade for touch.");
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopStyleColor();
+            if (sRobotoBold) ImGui::PopFont();
+            ImGui::SetCursorScreenPos(ImVec2(showcaseMin.x + 26.0f, showcaseMin.y + 128.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, textSecondary);
+            ImGui::TextWrapped("A familiar D-pad and buttons,\nwith the original 4:3 game view.");
+            ImGui::PopStyleColor();
+
+            // Minimal GBA SP-shaped control illustration: portrait body,
+            // 4:3 screen, D-pad and two face buttons.
+            const float deviceW = 186.0f;
+            const float deviceH = std::min(208.0f, showcaseHeight - 72.0f);
+            const float deviceX = showcaseMax.x - deviceW - 24.0f;
+            const float deviceY = showcaseMin.y + (showcaseHeight - deviceH) * 0.5f;
+            const ImVec2 deviceMin(deviceX, deviceY);
+            const ImVec2 deviceMax(deviceX + deviceW, deviceY + deviceH);
+            draw->AddRectFilled(deviceMin, deviceMax, IM_COL32(40, 48, 63, 255), deviceH * 0.16f);
+            draw->AddRect(deviceMin, deviceMax, IM_COL32(160, 186, 229, 85), deviceH * 0.16f, 0, 1.5f);
+            const float screenW = deviceW * 0.70f;
+            const float screenH = screenW * 0.75f;
+            const ImVec2 screenMin(deviceX + (deviceW - screenW) * 0.5f, deviceY + 14.0f);
+            const ImVec2 screenMax(screenMin.x + screenW, screenMin.y + screenH);
+            draw->AddRectFilled(screenMin, screenMax, IM_COL32(16, 35, 62, 255), 9.0f);
+            draw->AddRectFilledMultiColor(ImVec2(screenMin.x + 4.0f, screenMin.y + 4.0f),
+                                          ImVec2(screenMax.x - 4.0f, screenMax.y - 4.0f),
+                                          IM_COL32(60, 127, 206, 255), IM_COL32(75, 107, 181, 255),
+                                          IM_COL32(21, 67, 101, 255), IM_COL32(37, 82, 117, 255));
+            const float dpadX = deviceX + 53.0f;
+            const float dpadY = deviceY + deviceH * 0.72f;
+            const float arm = 13.0f;
+            draw->AddRectFilled(ImVec2(dpadX - arm * 0.5f, dpadY - 31.0f),
+                                ImVec2(dpadX + arm * 0.5f, dpadY + 31.0f), IM_COL32(13, 17, 24, 255), 5.0f);
+            draw->AddRectFilled(ImVec2(dpadX - 31.0f, dpadY - arm * 0.5f),
+                                ImVec2(dpadX + 31.0f, dpadY + arm * 0.5f), IM_COL32(13, 17, 24, 255), 5.0f);
+            draw->AddCircleFilled(ImVec2(deviceX + 132.0f, deviceY + deviceH * 0.70f), 15.0f,
+                                  IM_COL32(58, 125, 232, 255));
+            draw->AddCircleFilled(ImVec2(deviceX + 158.0f, deviceY + deviceH * 0.61f), 15.0f,
+                                  IM_COL32(79, 145, 246, 255));
+            draw->AddCircle(ImVec2(deviceX + 132.0f, deviceY + deviceH * 0.70f), 15.0f,
+                            IM_COL32(209, 227, 255, 105), 24, 1.0f);
+            draw->AddCircle(ImVec2(deviceX + 158.0f, deviceY + deviceH * 0.61f), 15.0f,
+                            IM_COL32(209, 227, 255, 105), 24, 1.0f);
+            const ImVec2 labelA = ImGui::CalcTextSize("A");
+            const ImVec2 labelB = ImGui::CalcTextSize("B");
+            draw->AddText(ImVec2(deviceX + 132.0f - labelA.x * 0.5f, deviceY + deviceH * 0.70f - labelA.y * 0.5f),
+                          IM_COL32(255, 255, 255, 230), "A");
+            draw->AddText(ImVec2(deviceX + 158.0f - labelB.x * 0.5f, deviceY + deviceH * 0.61f - labelB.y * 0.5f),
+                          IM_COL32(255, 255, 255, 230), "B");
+
+            const float privacyY = showcaseMax.y + 20.0f;
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, privacyY));
+            ImGui::PushStyleColor(ImGuiCol_Text, textSecondary);
+            CenteredText("Your game and saves stay on this device.");
+            ImGui::PopStyleColor();
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
+}
+#endif
+
 extern "C" bool Port_ImGui_RenderPrelaunch(bool rom_present, const char* version, const char* rom_name, bool* out_play,
                                            bool* out_change_rom) {
     if (out_play)
@@ -4754,124 +5855,187 @@ extern "C" bool Port_ImGui_RenderPrelaunch(bool rom_present, const char* version
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
+#ifdef __ANDROID__
+    const ImGuiViewport* startupViewport = ImGui::GetMainViewport();
+    if (startupViewport->WorkSize.y > startupViewport->WorkSize.x * 1.1f) {
+        DrawOneUiPrelaunchScreen(rom_present, version, rom_name, out_play, out_change_rom);
+        ImGui::Render();
+#ifdef TMC_GPU_RENDERER
+        if (gpuBackend) {
+            return true;
+        }
+#endif
+        if (sRenderer) {
+            SDL_SetRenderDrawColor(sRenderer, 15, 18, 18, 255);
+            SDL_RenderClear(sRenderer);
+            ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), sRenderer);
+            SDL_RenderPresent(sRenderer);
+        }
+        return true;
+    }
+#endif
+
     const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* backdrop = ImGui::GetBackgroundDrawList();
+    backdrop->AddRectFilledMultiColor(
+        vp->WorkPos,
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y),
+        IM_COL32(16, 20, 29, 255), IM_COL32(16, 20, 29, 255),
+        IM_COL32(8, 10, 15, 255), IM_COL32(8, 10, 15, 255));
+    const float cardWidth = std::min(900.0f, std::max(320.0f, vp->WorkSize.x - 48.0f));
     const ImVec2 viewport_center(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f);
     ImGui::SetNextWindowPos(viewport_center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_Always);
-    /* Cap the card's auto-height to the visible work area so a small or
-     * default-sized window never pushes the Select ROM / Play buttons
-     * off-screen; with the scrollbar enabled (below) they stay reachable
-     * without having to resize the window first (v0.6 oversight). */
-    ImGui::SetNextWindowSizeConstraints(ImVec2(620, 0.0f), ImVec2(620, vp->WorkSize.y));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36, 32));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
+    ImGui::SetNextWindowSize(ImVec2(cardWidth, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(cardWidth, 0.0f), ImVec2(cardWidth, vp->WorkSize.y - 32.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(34, 30));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 32.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.075f, 0.083f, 0.10f, 0.985f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.18f, 0.20f, 0.25f, 0.9f));
     if (ImGui::Begin("##prelaunch", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
-        const float win_w = ImGui::GetWindowSize().x;
-        const ImVec4 accent(0.40f, 0.72f, 0.46f, 1.00f);
-        const ImVec4 subtxt(0.70f, 0.78f, 0.70f, 1.00f);
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoScrollbar)) {
+        const float winW = ImGui::GetWindowSize().x;
+        const ImVec4 accent(0.39f, 0.65f, 1.00f, 1.00f);
+        const ImVec4 bodyText(0.95f, 0.95f, 0.97f, 1.00f);
+        const ImVec4 mutedText(0.66f, 0.68f, 0.74f, 1.00f);
 
-        /* Logo centred at top, sized to ~160px square. Falls through
-         * if the loader couldn't get a texture (decode error etc) —
-         * the rest of the card still draws fine. */
-        const ImTextureID logo_tex = Port_PrelaunchLogo_GetTexId();
-        if (logo_tex != 0) {
-            const float DISPLAY = 160.0f;
-            ImGui::SetCursorPosX((win_w - DISPLAY) * 0.5f);
-            ImGui::Image(logo_tex, ImVec2(DISPLAY, DISPLAY));
+        const ImTextureID logo = Port_PrelaunchLogo_GetTexId();
+        if (logo != 0) {
+            const float logoSize = 136.0f;
+            ImGui::SetCursorPosX((winW - logoSize) * 0.5f);
+            ImGui::Image(logo, ImVec2(logoSize, logoSize));
             ImGui::Dummy(ImVec2(0, 8));
         }
 
+        ImGui::SetCursorPosX((winW - ImGui::CalcTextSize("PROJECT PICORI").x) * 0.5f);
         ImGui::PushStyleColor(ImGuiCol_Text, accent);
-        ImGui::SetWindowFontScale(2.4f);
-        CenteredText("PROJECT PICORI");
+        ImGui::SetWindowFontScale(1.25f);
+        ImGui::TextUnformatted("PROJECT PICORI");
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopStyleColor();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, subtxt);
-        CenteredText("Minish Cap PC Port");
+        ImGui::SetCursorPosX((winW - ImGui::CalcTextSize("THE MINISH CAP").x) * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_Text, mutedText);
+        ImGui::TextUnformatted("THE MINISH CAP");
         ImGui::PopStyleColor();
-
-        ImGui::Dummy(ImVec2(0, 16));
-        ImGui::Separator();
         ImGui::Dummy(ImVec2(0, 14));
+        ImGui::SetCursorPosX((winW - ImGui::CalcTextSize("Welcome back").x) * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_Text, bodyText);
+        ImGui::SetWindowFontScale(1.2f);
+        ImGui::TextUnformatted(rom_present ? "Welcome back" : "Let’s get started");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        ImGui::SetCursorPosX((winW - ImGui::CalcTextSize("Your game and saves stay on this device.").x) * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_Text, mutedText);
+        ImGui::TextUnformatted("Your game and saves stay on this device.");
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 24));
 
         if (rom_present) {
-            ImGui::PushStyleColor(ImGuiCol_Text, subtxt);
-            ImGui::TextUnformatted("Version");
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.105f, 0.12f, 0.16f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 28.0f);
+            if (ImGui::BeginChild("##rom_status", ImVec2(0, 150), true,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                const ImVec2 badgePos = ImGui::GetCursorScreenPos();
+                ImDrawList* draw = ImGui::GetWindowDrawList();
+                draw->AddCircleFilled(ImVec2(badgePos.x + 17.0f, badgePos.y + 16.0f), 15.0f,
+                                      IM_COL32(57, 139, 95, 255));
+                draw->AddLine(ImVec2(badgePos.x + 10.0f, badgePos.y + 16.0f),
+                              ImVec2(badgePos.x + 15.0f, badgePos.y + 21.0f), IM_COL32(255, 255, 255, 255), 2.2f);
+                draw->AddLine(ImVec2(badgePos.x + 15.0f, badgePos.y + 21.0f),
+                              ImVec2(badgePos.x + 24.0f, badgePos.y + 11.0f), IM_COL32(255, 255, 255, 255), 2.2f);
+                ImGui::SetCursorScreenPos(ImVec2(badgePos.x + 42.0f, badgePos.y + 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, accent);
+                ImGui::TextUnformatted("READY TO PLAY");
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, mutedText);
+                ImGui::Text("v%s", version ? version : "?");
+                ImGui::PopStyleColor();
+                ImGui::SetCursorScreenPos(ImVec2(badgePos.x + 42.0f, badgePos.y + 42.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, bodyText);
+                ImGui::SetWindowFontScale(1.12f);
+                ImGui::TextWrapped("%s", rom_name ? rom_name : "Game ROM");
+                ImGui::SetWindowFontScale(1.0f);
+                ImGui::PopStyleColor();
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
             ImGui::PopStyleColor();
-            ImGui::SameLine(170.0f);
-            ImGui::TextUnformatted(version ? version : "?");
+            ImGui::Dummy(ImVec2(0, 14));
 
-            ImGui::PushStyleColor(ImGuiCol_Text, subtxt);
-            ImGui::TextUnformatted("ROM");
+            ImGui::SetWindowFontScale(1.1f);
+            const bool playClicked = PrelaunchPillButton("##play_game", "Play game", ImVec2(-1.0f, 82.0f),
+                                                         true, PrelaunchButtonIcon::Play) ||
+                                     ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                                     ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+                                     ImGui::IsKeyPressed(ImGuiKey_Space);
+            ImGui::SetWindowFontScale(1.0f);
+            if (playClicked && out_play) {
+                *out_play = true;
+            }
+            ImGui::Dummy(ImVec2(0, 5));
+            ImGui::PushStyleColor(ImGuiCol_Text, mutedText);
+            ImGui::Text("Version %s", version ? version : "?");
             ImGui::PopStyleColor();
-            ImGui::SameLine(170.0f);
-            ImGui::TextUnformatted(rom_name ? rom_name : "?");
-            ImGui::SameLine();
-            /* Right-align the Change-ROM button to the edge of the card. */
-            {
-                const char* lbl = "Change ROM...";
-                float bw = ImGui::CalcTextSize(lbl).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-                float pad = ImGui::GetStyle().WindowPadding.x;
-                ImGui::SameLine(win_w - pad - bw);
-                if (ImGui::Button(lbl)) {
-                    if (out_change_rom)
-                        *out_change_rom = true;
-                }
+            ImGui::Dummy(ImVec2(0, 12));
+            if (PrelaunchPillButton("##change_rom", "Change game file", ImVec2(-1.0f, 68.0f),
+                                    false, PrelaunchButtonIcon::Switch)) {
+                if (out_change_rom) *out_change_rom = true;
             }
         } else {
-            /* First-launch / missing-ROM state: dominate the card with a
-             * "Select your Minish Cap ROM" prompt + big button. No Play
-             * yet — there's nothing to play. */
-            ImGui::PushStyleColor(ImGuiCol_Text, subtxt);
-            CenteredText("No ROM found.");
-            CenteredText("Project Picori needs your own Minish Cap dump (.gba).");
-            CenteredText("We identify it by SHA-1 - filename is irrelevant.");
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.105f, 0.12f, 0.16f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 28.0f);
+            if (ImGui::BeginChild("##rom_status", ImVec2(0, 146), true,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                const ImVec2 badgePos = ImGui::GetCursorScreenPos();
+                ImDrawList* draw = ImGui::GetWindowDrawList();
+                draw->AddCircleFilled(ImVec2(badgePos.x + 18.0f, badgePos.y + 18.0f), 17.0f,
+                                      IM_COL32(52, 112, 202, 255));
+                draw->AddLine(ImVec2(badgePos.x + 18.0f, badgePos.y + 9.0f),
+                              ImVec2(badgePos.x + 18.0f, badgePos.y + 27.0f), IM_COL32(255, 255, 255, 255), 2.2f);
+                draw->AddLine(ImVec2(badgePos.x + 9.0f, badgePos.y + 18.0f),
+                              ImVec2(badgePos.x + 27.0f, badgePos.y + 18.0f), IM_COL32(255, 255, 255, 255), 2.2f);
+                ImGui::SetCursorScreenPos(ImVec2(badgePos.x + 48.0f, badgePos.y + 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, bodyText);
+                ImGui::SetWindowFontScale(1.08f);
+                ImGui::TextUnformatted("Add your game file");
+                ImGui::SetWindowFontScale(1.0f);
+                ImGui::PopStyleColor();
+                ImGui::SetCursorScreenPos(ImVec2(badgePos.x + 48.0f, badgePos.y + 46.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, mutedText);
+                ImGui::TextWrapped("Choose your own Minish Cap .gba file. It stays on your device.");
+                ImGui::PopStyleColor();
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
             ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0, 14.0f));
+
+            ImGui::SetWindowFontScale(1.05f);
+            const bool selectClicked = PrelaunchPillButton("##select_game_file", "Choose game file",
+                                                            ImVec2(-1.0f, 82.0f), true,
+                                                            PrelaunchButtonIcon::Folder) ||
+                                       ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                                       ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+                                       ImGui::IsKeyPressed(ImGuiKey_Space);
+            ImGui::SetWindowFontScale(1.0f);
+            if (selectClicked && out_change_rom) {
+                *out_change_rom = true;
+            }
         }
-        ImGui::Dummy(ImVec2(0, 14));
-        (void)DrawRegionLanguageControls(true);
 
         ImGui::Dummy(ImVec2(0, 22));
-
-        /* Big centred action button: Play when a ROM is loaded, Select
-         * ROM when none. Enter / Space activates whichever is shown. */
-        {
-            const bool is_select = !rom_present;
-            const char* lbl = is_select ? "Select ROM..." : "Play";
-            const ImVec2 sz(is_select ? 260.0f : 220.0f, 48.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.42f, 0.24f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.55f, 0.34f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.40f, 0.72f, 0.46f, 1.0f));
-            ImGui::SetCursorPosX((win_w - sz.x) * 0.5f);
-            ImGui::SetWindowFontScale(1.4f);
-            const bool clicked = ImGui::Button(lbl, sz) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-                                 ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space);
-            if (clicked) {
-                if (is_select) {
-                    if (out_change_rom)
-                        *out_change_rom = true;
-                } else {
-                    if (out_play)
-                        *out_play = true;
-                }
-            }
-            ImGui::SetWindowFontScale(1.0f);
-            ImGui::PopStyleColor(3);
-            ImGui::PopStyleVar();
-        }
-
-        ImGui::Dummy(ImVec2(0, 6));
-        ImGui::PushStyleColor(ImGuiCol_Text, subtxt);
-        CenteredText(rom_present ? "Press Enter or click Play to start"
-                                 : "Press Enter or click to pick your .gba file");
+        (void)DrawRegionLanguageControls(true);
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::PushStyleColor(ImGuiCol_Text, mutedText);
+        CenteredText("Your game file is checked on this device before loading.");
         ImGui::PopStyleColor();
     }
     ImGui::End();
-    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
 
     ImGui::Render();
 

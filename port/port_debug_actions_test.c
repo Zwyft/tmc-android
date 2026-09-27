@@ -46,6 +46,29 @@ RoomTransition gRoomTransition;
 RoomHeader* gAreaRoomHeaders[0x90];
 Hitbox gPlayerHitbox;
 
+/* Save header: the save editor mirrors msg_speed / brightness into it so a
+ * fresh boot doesn't restore the old value. gSaveHeader is a macro over
+ * gba_MemPtr(0x02000000), which resolves into gEwram — so the test just backs
+ * that array and the header falls out of it at offset 0. */
+u8 gEwram[0x40000];
+u8* gRomData;
+u32 gRomSize;
+void Port_LogRomAccess(u32 gba_addr, const char* caller) { (void)gba_addr; (void)caller; }
+
+/* Engine flag setters. The save editor's story-skip presets go through the
+ * real SetGlobalFlag / SetLocalFlagByBank (and their *B remap variants, which
+ * are plain macros in this non-MULTI_REGION test build) so the presets write
+ * the same bits the engine would. Stubbed here against the same raw
+ * gSave.flags layout the flag browser uses: absolute bit = bank offset + ord. */
+void SetGlobalFlag(u32 flag) { gSave.flags[flag >> 3] |= (u8)(1u << (flag & 7)); }
+void ClearGlobalFlag(u32 flag) { gSave.flags[flag >> 3] &= (u8)~(1u << (flag & 7)); }
+void SetLocalFlagByBank(u32 offset, u32 flag) {
+    gSave.flags[(offset + flag) >> 3] |= (u8)(1u << ((offset + flag) & 7));
+}
+void ClearLocalFlagByBank(u32 offset, u32 flag) {
+    gSave.flags[(offset + flag) >> 3] &= (u8)~(1u << ((offset + flag) & 7));
+}
+
 bool32 SetAffineInfo(Entity* entity, u32 x, u32 y, u32 z) { (void)entity; (void)x; (void)y; (void)z; return 0; }
 void PlayerSetNormalAndCollide(void) {}
 void LoadItemGfx(void) {}
@@ -233,6 +256,72 @@ int main(void) {
     CHECK(Port_DebugAction_Warp(0x49, 0, 1084, 1521, 1) == 1,
           "warp can retry after camera initialization");
     CHECK(transitionCalls == 1, "ready warp invokes transition once");
+
+    /* ---- save editor: story-skip presets -------------------------------
+     * The load-bearing invariant is that TABIDACHI ends up SET on every
+     * story skip: sub_unk3_HyruleTown_0 keys the festival-vs-real town
+     * property choice off it, so a skip that left it clear would load the
+     * town in festival state with post-festival exits (softlock). See the
+     * TOWN_PROBE notes in port_repro_roomcap.c. */
+    memset(&gSave, 0, sizeof(gSave));
+    Port_DebugAction_SaveEdit_ApplyPreset(0);
+    CHECK(((gSave.flags[TABIDACHI >> 3] >> (TABIDACHI & 7)) & 1) == 1,
+          "skip-prologue sets TABIDACHI (town must not load festival state)");
+    CHECK(((gSave.flags[START >> 3] >> (START & 7)) & 1) == 1, "skip-prologue sets START");
+    CHECK(((gSave.flags[EZERO_1ST >> 3] >> (EZERO_1ST & 7)) & 1) == 1, "skip-prologue sets EZERO_1ST");
+    CHECK(gSave.global_progress == 1, "skip-prologue leaves global_progress at 1");
+
+    /* The bank-1 local flag must land at absolute offset FLAG_BANK_1 + ord. */
+    const unsigned moriBit = FLAG_BANK_1 + MORI_00_KOBITO;
+    CHECK(((gSave.flags[moriBit >> 3] >> (moriBit & 7)) & 1) == 1,
+          "skip-prologue sets bank-1 MORI_00_KOBITO at the right absolute bit");
+
+    /* Festival skip additionally drops ZELDA_CHASE (the festival redirect). */
+    memset(&gSave, 0, sizeof(gSave));
+    gSave.flags[ZELDA_CHASE >> 3] |= (u8)(1u << (ZELDA_CHASE & 7)); /* pre-set */
+    Port_DebugAction_SaveEdit_ApplyPreset(1);
+    CHECK(((gSave.flags[ZELDA_CHASE >> 3] >> (ZELDA_CHASE & 7)) & 1) == 0,
+          "skip-festival clears ZELDA_CHASE");
+    CHECK(((gSave.flags[TABIDACHI >> 3] >> (TABIDACHI & 7)) & 1) == 1,
+          "skip-festival still sets TABIDACHI");
+
+    /* Dungeon-clear preset must not touch story flags. */
+    memset(&gSave, 0, sizeof(gSave));
+    Port_DebugAction_SaveEdit_ApplyPreset(3);
+    CHECK(((gSave.flags[TABIDACHI >> 3] >> (TABIDACHI & 7)) & 1) == 0,
+          "clear-dungeons leaves story flags untouched");
+    CHECK(((gSave.flags[LV1_CLEAR >> 3] >> (LV1_CLEAR & 7)) & 1) == 1,
+          "clear-dungeons sets the LV1_CLEAR ladder");
+
+    /* ---- save editor: field clamping ------------------------------------ */
+    memset(&gSave, 0, sizeof(gSave));
+    const int maxHealthField = 1; /* SAVEEDIT_FIELD_MAX_HEALTH */
+    const int healthField = 0;    /* SAVEEDIT_FIELD_HEALTH */
+    Port_DebugAction_SaveEdit_SetField(maxHealthField, 999);
+    CHECK(gSave.stats.maxHealth == 0xA0, "max hearts clamps to 20 containers (0xA0)");
+    Port_DebugAction_SaveEdit_SetField(healthField, 0xA0);
+    Port_DebugAction_SaveEdit_SetField(maxHealthField, 8);
+    CHECK(gSave.stats.health <= gSave.stats.maxHealth,
+          "lowering max hearts drags health under the new ceiling");
+
+    Port_DebugAction_SaveEdit_SetField(3 /* rupees */, 5000);
+    CHECK(gSave.stats.rupees == 999, "rupees clamp to 999");
+
+    /* QoL helpers: capacity tiers before counts, or counts clamp to the old cap. */
+    memset(&gSave, 0, sizeof(gSave));
+    Port_DebugAction_SaveEdit_FullRestock();
+    CHECK(gSave.stats.walletType == 3 && gSave.stats.rupees == 999, "restock maxes the wallet");
+    CHECK(gSave.stats.quiverType == 3 && gSave.stats.arrowCount == 99, "restock maxes the quiver");
+
+    memset(&gSave, 0, sizeof(gSave));
+    Port_DebugAction_SaveEdit_UnlockDungeons();
+    CHECK((gSave.dungeonItems[7] & 0x7) == 0x7 && gSave.dungeonKeys[7] == 9,
+          "unlock-dungeons grants every dungeon's items + keys");
+
+    memset(&gSave, 0, sizeof(gSave));
+    Port_DebugAction_SaveEdit_InstantText();
+    CHECK(gSave.msg_speed == 2 && gSaveHeader->msg_speed == 2,
+          "instant text sets the save and the header");
 
     if (g_fails == 0) {
         fprintf(stderr, "DEBUG-ACTIONS REGRESSION OK\n");

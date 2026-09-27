@@ -12,8 +12,12 @@ void Port_TouchControls_HandleEvent(const SDL_Event* event);
 void Port_TouchControls_NotifyRenderSize(int width, int height);
 void Port_TouchControls_NotifyGamepadUsed(void);
 void Port_TouchControls_SetGamepadAvailable(bool available);
+void Port_TouchControls_SetMenuOpen(bool open);
 bool Port_TouchControls_InputPressed(PortInput input);
 void Port_TouchControls_Render(SDL_Renderer* renderer, int windowWidth, int windowHeight);
+void Port_TouchControls_RenderShell(SDL_Renderer* renderer, int windowWidth, int windowHeight);
+bool Port_TouchControls_GameViewport(int windowWidth, int windowHeight, SDL_FRect* viewport);
+void Port_TouchControls_ReleaseRenderer(SDL_Renderer* renderer);
 
 bool Port_TouchControls_ConsumeSettingsRequest(void);
 

@@ -1,3 +1,6 @@
 *
 !*.json
 !.gitignore
+!ui/
+!ui/mobile-controls/
+!ui/mobile-controls/*.png

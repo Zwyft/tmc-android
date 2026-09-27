@@ -708,6 +708,16 @@ target("tmc_pc")
     -- (see port_prelaunch_logo.cpp).
     add_rules("utils.bin2c", {extensions = {".png"}})
     add_files("docs/picori-logo.png", {rule = "utils.bin2c", nozeroend = true})
+    -- Embed the user-authorized GBA SP shell and its pressed-state artwork.
+    add_files("assets/ui/mobile-controls/gba-sp-zelda.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-a.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-b.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-left.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-right.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-up.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-down.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-start-select.png", {rule = "utils.bin2c", nozeroend = true})
+    add_files("assets/ui/mobile-controls/gba-sp-menu.png", {rule = "utils.bin2c", nozeroend = true})
     add_files("port/port_debug_actions.c")
     add_files("port/port_flag_names.cpp")
     add_files("port/port_debug_entities.c")
@@ -992,6 +1002,21 @@ target("tmc_pc")
     -- on Linux/Android; it's a no-op stub on Windows/macOS (Vulkan/Metal there).
     if has_config("gpu_renderer") and is_plat("linux", "android") then
         add_syslinks("EGL", "GLESv2")
+        if is_plat("android") then
+            -- Android: ES 3.1 compute symbols (glDispatchCompute, glBindBufferBase,
+            -- glMemoryBarrier...) live in libGLESv3.so, not libGLESv2.so.
+            add_syslinks("GLESv3")
+        end
+    end
+    if is_plat("android") then
+        -- ALWAYS link the public GL stack on Android, even with gpu_renderer=n:
+        -- the GLES compute rasterizer (port_gpu_raster_gl.cpp) is compiled into
+        -- the shared lib for its runtime toggle, and a shared library keeps its
+        -- unresolved symbols at link time (lld only hard-errors for
+        -- executables). Android's runtime linker then refuses to dlopen the
+        -- lib: "cannot locate symbol eglGetDisplay". Listing libEGL/GLESv2/
+        -- GLESv3 as DT_NEEDED resolves them at load time from the system.
+        add_syslinks("EGL", "GLESv2", "GLESv3")
     end
 
     -- Compiler flags
@@ -1172,6 +1197,9 @@ target("ppu_gpu_parity")
     add_files("port/port_gpu_raster_gl.cpp")
     add_packages("libsdl3")
     add_syslinks("EGL", "GLESv2")
+    if is_plat("android") then
+        add_syslinks("GLESv3") -- ES 3.1 compute symbols live in libGLESv3.so
+    end
     add_mingw_static_cpp_runtime()
 target_end()
 

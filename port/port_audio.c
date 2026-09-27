@@ -374,6 +374,20 @@ bool Port_Audio_Init(void) {
     return true;
 }
 
+/* Android lifecycle: release the audio device while backgrounded and take
+ * it back on return. The stream + mixer state survive both calls untouched. */
+void Port_Audio_Suspend(void) {
+    if (sAudioStream != NULL) {
+        SDL_PauseAudioStreamDevice(sAudioStream);
+    }
+}
+
+void Port_Audio_Resume(void) {
+    if (sAudioStream != NULL) {
+        SDL_ResumeAudioStreamDevice(sAudioStream);
+    }
+}
+
 void Port_Audio_Shutdown(void) {
     if (sAudioStream != NULL) {
         SDL_DestroyAudioStream(sAudioStream);

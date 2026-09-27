@@ -17,6 +17,39 @@ void Port_DebugAction_AllKinstones(void);
 void Port_DebugAction_AllFigurines130(void);
 void Port_DebugAction_AllFigurines100(void);
 
+/* ---- Save editor ------------------------------------------------------
+ * A "skip the boring parts" layer over the live gSave. Two halves:
+ *
+ *  - Presets: named story-progress jumps (prologue / festival / Deepwood /
+ *    dungeon-clear ladder). Enumerated so the menu can render the list
+ *    without duplicating the stage table, and applied through the engine's
+ *    own SetGlobalFlagB / SetLocalFlagByBankB so the MULTI_REGION ordinal
+ *    remap applies to the USA-baseline flag names.
+ *
+ *  - Raw fields: a uniform (name, min, max, value, set) tuple over the
+ *    interesting gSave scalars, so the editor UI can build rows
+ *    generically. Values clamp to the same bounds the engine uses; writing
+ *    maxHealth drags health down if it would otherwise exceed the ceiling.
+ *
+ * All of these mutate the in-memory save only. Callers persist via the
+ * normal save path (auto-save, quicksave, or Save & Quit to Title). */
+int         Port_DebugQuery_SaveEditPresetCount(void);
+const char* Port_DebugQuery_SaveEditPresetName(int preset);
+const char* Port_DebugQuery_SaveEditPresetHint(int preset);
+void        Port_DebugAction_SaveEdit_ApplyPreset(int preset);
+
+void Port_DebugAction_SaveEdit_RevealMap(void);
+void Port_DebugAction_SaveEdit_InstantText(void);
+void Port_DebugAction_SaveEdit_FullRestock(void);
+void Port_DebugAction_SaveEdit_UnlockDungeons(void);
+
+int         Port_DebugQuery_SaveEditFieldCount(void);
+const char* Port_DebugQuery_SaveEditFieldName(int field);
+int         Port_DebugQuery_SaveEditFieldMin(int field);
+int         Port_DebugQuery_SaveEditFieldMax(int field);
+int         Port_DebugQuery_SaveEditFieldValue(int field);
+void        Port_DebugAction_SaveEdit_SetField(int field, int value);
+
 int Port_DebugAction_Warp(unsigned char area, unsigned char room,
                           unsigned short x, unsigned short y,
                           unsigned char layer);
